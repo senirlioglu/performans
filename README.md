@@ -1,63 +1,33 @@
-# 🩺 Bölgesel Performans Röntgeni v2
+# 🩺 Performans Röntgeni v3
 
-**Sorun Bulucu / Müdahale Haritası**
+**DuckDB + Parquet ile Ultra Hızlı Versiyon**
 
-Rapor değil, TEŞHİS aracı. Tıpkı doktorun MR'a bakıp "sorun burada" demesi gibi.
+120MB+ Excel dosyaları için optimize edildi.
 
-## 🎯 Özellikler
+## 🚀 v3 Farkı
 
-### Incident Scoring (0-100 Puan)
-Her sorunlu alan skorlanır:
-- Ciro Payı Düşüşü: %35 ağırlık
-- Marj Erimesi: %25 ağırlık
-- Fire Artışı: %20 ağırlık
-- Envanter Artışı: %20 ağırlık
+- **DuckDB**: SQL-tabanlı analiz, RAM kullanmadan
+- **Parquet**: Excel'den 10x hızlı okuma
+- **Streaming**: Büyük dosyalar için optimize
 
-### Otomatik Neden Tespiti
-Sistem sorunun kaynağını tespit eder:
-- 🔴 Kampanya Zararı
-- 🔴 Fire Patlaması
-- 🔴 Stok/Envanter Problemi
-- 🔴 Trafik/Talep Düşüşü
-- 🔴 Marj Erimesi
-
-### Aksiyon Önerileri
-Her sorun için operasyonel öneri verir.
-
-### Minimum Baz Filtresi
-2024'te 10.000 TL altı satışı olan alanları incident listesine almaz.
-Böylece %500 artan 500 TL'lik mağaza seni yanıltmaz.
-
-### 6 Sekmeli Excel Rapor
-1. Müdahale Haritası (skorlu)
-2. Marj Sızıntısı
-3. Gelişen Alanlar
-4. Tüm Incidents
-5. Top 50 Ürün
-6. SM/BS Özet
-
-## 🚀 Kullanım
+## Kurulum
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## ☁️ Streamlit Cloud
+## Nasıl Çalışır?
 
-1. GitHub'a yükle
-2. share.streamlit.io'dan deploy et
-3. URL al
+1. Excel yüklenir
+2. Otomatik Parquet'e dönüştürülür (temp)
+3. DuckDB ile SQL sorguları çalışır
+4. Sonuçlar gösterilir
 
-## 📊 Veri Formatı
+## Gereksinimler
 
-Excel dosyasında olması gereken kolonlar:
-- SM, BS, YIL
-- Mağaza - Anahtar, Mağaza - Orta uzunl.metin
-- Ürün Grubu, Malzeme Nitelik, Üst Mal Grubu, Mal Grubu
-- Malzeme Kodu, Malzeme Tanımı
-- Satış Miktarı, Satış Hasılatı (VD), Net Marj
-- Fire Tutarı, Envanter Tutarı, Toplam Kampanya Zararı
-
----
-**A101 Bölge Yönetimi için geliştirildi**
+- streamlit
+- pandas
+- duckdb
+- pyarrow
+- openpyxl

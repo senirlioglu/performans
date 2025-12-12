@@ -1,14 +1,14 @@
-# 🩺 Performans Röntgeni v3
+# 📊 Performans Analizi v4
 
-**DuckDB + Parquet ile Ultra Hızlı Versiyon**
+**Basit, Net, Kullanışlı**
 
-120MB+ Excel dosyaları için optimize edildi.
+## Ana Özellikler
 
-## 🚀 v3 Farkı
-
-- **DuckDB**: SQL-tabanlı analiz, RAM kullanmadan
-- **Parquet**: Excel'den 10x hızlı okuma
-- **Streaming**: Büyük dosyalar için optimize
+- **Ana Metrik**: Satış Miktarı
+- **Nitelik Filtresi**: Spot, Grup Spot, Regule, Kasa Aktivitesi, Bölgesel
+- **En Kötü/İyi 10**: Mal Grubu bazlı
+- **Ürün Detay**: Her mal grubunun ürünleri
+- **Excel Rapor**: Seçilen filtreye göre
 
 ## Kurulum
 
@@ -17,17 +17,10 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Nasıl Çalışır?
+## Filtre Hiyerarşisi
 
-1. Excel yüklenir
-2. Otomatik Parquet'e dönüştürülür (temp)
-3. DuckDB ile SQL sorguları çalışır
-4. Sonuçlar gösterilir
+**Organizasyon:**
+SM → BS → Mağaza
 
-## Gereksinimler
-
-- streamlit
-- pandas
-- duckdb
-- pyarrow
-- openpyxl
+**Ürün:**
+Nitelik → Ürün Grubu → Üst Mal Grubu → Mal Grubu

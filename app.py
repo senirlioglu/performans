@@ -1,5 +1,5 @@
 """
-🎯 SATIŞ ANALİZ KARAR SİSTEMİ v5.1
+🎯 SATIŞ KARAR SİSTEMİ v5.1
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 Bu bir dashboard değil, KARAR sistemi.
 3 dakikada teşhis, neden, aksiyon.
@@ -100,9 +100,22 @@ st.markdown("""
 # ============================================================================
 
 def excel_oku(file_bytes: bytes, yil: int) -> pd.DataFrame:
-    """Excel'i oku ve temizle"""
+    """Excel'i oku ve temizle - SADECE gerekli kolonlar"""
     
-    df = pd.read_excel(BytesIO(file_bytes), engine='openpyxl')
+    # Önce kolon isimlerini al
+    df_cols = pd.read_excel(BytesIO(file_bytes), engine='openpyxl', nrows=0)
+    df_cols.columns = df_cols.columns.str.strip()
+    
+    # Sadece var olan ve gerekli kolonları seç
+    gerekli = list(KOLON_MAP.keys())
+    mevcut = [c for c in gerekli if c in df_cols.columns]
+    
+    # Sadece gerekli kolonları oku
+    df = pd.read_excel(
+        BytesIO(file_bytes), 
+        engine='openpyxl',
+        usecols=mevcut
+    )
     df.columns = df.columns.str.strip()
     
     # Kolon isimlerini kısalt
@@ -113,18 +126,21 @@ def excel_oku(file_bytes: bytes, yil: int) -> pd.DataFrame:
     if 'Nitelik' in df.columns:
         df = df[df['Nitelik'].isin(GECERLI_NITELIKLER)]
     
-    # Numerik kolonlar
+    # Numerik kolonlar - float32 ile bellek tasarrufu
     for col in NUMERIK_KOLONLAR:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
     
-    # String kolonlar
+    # String kolonlar - temizle
     str_cols = ['SM', 'BS', 'Magaza_Kod', 'Magaza_Ad', 'Nitelik', 
                 'Urun_Grubu', 'Ust_Mal', 'Mal_Grubu', 'Urun_Kod', 'Urun_Ad']
     for col in str_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
             df[col] = df[col].replace(['nan', 'None', 'NaN', '<NA>'], '')
+    
+    # Bellek temizle
+    gc.collect()
     
     return df
 
@@ -226,11 +242,14 @@ def get_ozet(con, where: str) -> dict:
     
     df = con.execute(sql).fetchdf()
     
+    # Kolon isimlerini küçük harfe çevir
+    df.columns = df.columns.str.lower()
+    
     sonuc = {}
     for _, row in df.iterrows():
-        yil = int(row['Yil'])
-        for col in ['Adet', 'Ciro', 'Marj', 'Fire']:
-            sonuc[f'{col.lower()}_{yil}'] = float(row[col]) if pd.notna(row[col]) else 0
+        yil = int(row['yil'])
+        for col in ['adet', 'ciro', 'marj', 'fire']:
+            sonuc[f'{col}_{yil}'] = float(row[col]) if pd.notna(row[col]) else 0
     
     # Değişim
     for m in ['adet', 'ciro', 'marj', 'fire']:
@@ -246,6 +265,12 @@ def get_mal_grubu_analiz(con, where: str, min_ciro: float) -> pd.DataFrame:
     
     ciro_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) >= {min_ciro}" if min_ciro > 0 else ""
     
+    # WHERE clause düzeltmesi
+    if where:
+        where_mal = f"{where} AND Mal_Grubu != ''"
+    else:
+        where_mal = "WHERE Mal_Grubu != ''"
+    
     sql = f"""
         SELECT 
             Mal_Grubu,
@@ -259,22 +284,24 @@ def get_mal_grubu_analiz(con, where: str, min_ciro: float) -> pd.DataFrame:
             SUM(CASE WHEN Yil=2024 THEN ABS(Fire) ELSE 0 END) as Fire_2024,
             SUM(CASE WHEN Yil=2025 THEN ABS(Fire) ELSE 0 END) as Fire_2025
         FROM veri
-        {where}
-        {"WHERE" if not where else "AND"} Mal_Grubu != ''
+        {where_mal}
         GROUP BY Mal_Grubu
         {ciro_filtre}
-    """.replace("WHERE WHERE", "WHERE").replace("WHERE AND", "WHERE")
+    """
     
     df = con.execute(sql).fetchdf()
     
     if df.empty:
         return df
     
+    # Kolon isimlerini normalize et
+    df.columns = [c.lower() for c in df.columns]
+    
     # Değişim hesapla
-    df['Adet_Deg'] = df.apply(lambda r: ((r['Adet_2025']/r['Adet_2024'])-1)*100 if r['Adet_2024']>0 else 0, axis=1)
-    df['Ciro_Deg'] = df.apply(lambda r: ((r['Ciro_2025']/r['Ciro_2024'])-1)*100 if r['Ciro_2024']>0 else 0, axis=1)
-    df['Marj_Deg'] = df.apply(lambda r: ((r['Marj_2025']/r['Marj_2024'])-1)*100 if r['Marj_2024']>0 else 0, axis=1)
-    df['Fire_Deg'] = df.apply(lambda r: ((r['Fire_2025']/r['Fire_2024'])-1)*100 if r['Fire_2024']>0 else 0, axis=1)
+    df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
+    df['ciro_deg'] = df.apply(lambda r: ((r['ciro_2025']/r['ciro_2024'])-1)*100 if r['ciro_2024']>0 else 0, axis=1)
+    df['marj_deg'] = df.apply(lambda r: ((r['marj_2025']/r['marj_2024'])-1)*100 if r['marj_2024']>0 else 0, axis=1)
+    df['fire_deg'] = df.apply(lambda r: ((r['fire_2025']/r['fire_2024'])-1)*100 if r['fire_2024']>0 else 0, axis=1)
     
     return df
 
@@ -302,8 +329,11 @@ def get_urun_detay(con, mal_grubu: str, where: str) -> pd.DataFrame:
     
     df = con.execute(sql).fetchdf()
     
+    # Kolon isimlerini küçük harfe çevir
+    df.columns = [c.lower() for c in df.columns]
+    
     if not df.empty:
-        df['Adet_Deg'] = df.apply(lambda r: ((r['Adet_2025']/r['Adet_2024'])-1)*100 if r['Adet_2024']>0 else 0, axis=1)
+        df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
     
     return df
 
@@ -315,9 +345,9 @@ def get_urun_detay(con, mal_grubu: str, where: str) -> pd.DataFrame:
 def neden_tespit(row: pd.Series) -> tuple:
     """Neden ve aksiyon"""
     
-    marj_deg = row.get('Marj_Deg', 0) or 0
-    adet_deg = row.get('Adet_Deg', 0) or 0
-    fire_deg = row.get('Fire_Deg', 0) or 0
+    marj_deg = row.get('marj_deg', 0) or 0
+    adet_deg = row.get('adet_deg', 0) or 0
+    fire_deg = row.get('fire_deg', 0) or 0
     
     if fire_deg > 50:
         return ("🔥 Fire artışı kritik", "SKT kontrolü, sipariş azalt", "red")
@@ -352,8 +382,8 @@ def excel_rapor(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:
     df = get_mal_grubu_analiz(con, where, min_ciro)
     
     if not df.empty:
-        df['Neden'] = df.apply(lambda r: neden_tespit(r)[0], axis=1)
-        df['Aksiyon'] = df.apply(lambda r: neden_tespit(r)[1], axis=1)
+        df['neden'] = df.apply(lambda r: neden_tespit(r)[0], axis=1)
+        df['aksiyon'] = df.apply(lambda r: neden_tespit(r)[1], axis=1)
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         # Bilgi
@@ -365,8 +395,8 @@ def excel_rapor(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:
         
         # En Kötü
         if not df.empty:
-            df.nsmallest(20, 'Adet_Deg').to_excel(writer, sheet_name='En Kötü 20', index=False)
-            df.nlargest(20, 'Adet_Deg').to_excel(writer, sheet_name='En İyi 20', index=False)
+            df.nsmallest(20, 'adet_deg').to_excel(writer, sheet_name='En Kötü 20', index=False)
+            df.nlargest(20, 'adet_deg').to_excel(writer, sheet_name='En İyi 20', index=False)
             df.to_excel(writer, sheet_name='Tüm Veriler', index=False)
     
     output.seek(0)
@@ -493,23 +523,23 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
         st.info("Gösterilecek veri yok")
         return None
     
-    df_sorted = df.nlargest(limit, 'Adet_Deg') if ters else df.nsmallest(limit, 'Adet_Deg')
+    df_sorted = df.nlargest(limit, 'adet_deg') if ters else df.nsmallest(limit, 'adet_deg')
     
     selected = None
     
     for idx, row in df_sorted.iterrows():
-        mal = row['Mal_Grubu']
-        adet_deg = row.get('Adet_Deg', 0)
+        mal = row['mal_grubu']
+        adet_deg = row.get('adet_deg', 0)
         neden, aksiyon, renk = neden_tespit(row)
         
         with st.expander(f"**{mal}** → Adet: {adet_deg:+.1f}%"):
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Adet 2024", f"{row['Adet_2024']:,.0f}")
-                st.metric("Ciro 2024", f"₺{row['Ciro_2024']:,.0f}")
+                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
             with col2:
-                st.metric("Adet 2025", f"{row['Adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                st.metric("Ciro 2025", f"₺{row['Ciro_2025']:,.0f}", f"{row.get('Ciro_Deg',0):+.1f}%")
+                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row.get('ciro_deg',0):+.1f}%")
             
             st.markdown(f'<div class="neden-box"><strong>Neden:</strong> {neden}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="aksiyon-box">💡 <strong>Aksiyon:</strong> {aksiyon}</div>', unsafe_allow_html=True)

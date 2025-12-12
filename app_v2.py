@@ -171,16 +171,19 @@ def load_and_process_data(file_bytes_2024, file_bytes_2025, name_2024, name_2025
     
     # 3. Veri tiplerini optimize et
     progress.progress(60, text="Bellek optimize ediliyor...")
+    
+    # String kolonları temizle (category KULLANMA - groupby sorununa yol açıyor)
     for col in ['SM', 'BS', 'Mağaza - Orta uzunl.metin', 'Ürün Grubu - Orta uzunl.metin',
                 'Malzeme Nitelik - Metin', 'Mal Grubu - Orta uzunl.metin', 
                 'Üst Mal Grubu - Orta uzunl.metin', 'Malzeme Tanımı']:
         if col in df.columns:
-            df[col] = df[col].astype('category')
+            df[col] = df[col].astype(str).replace('nan', '')
     
+    # Numerik kolonları optimize et
     for col in ['Satış Miktarı', 'Satış Hasılatı (VD)', 'Net Marj', 'Fire Tutarı', 
                 'Envanter Tutarı', 'Toplam Kampanya Zararı']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
     # 4. Aggregate tabloları oluştur
     progress.progress(70, text="Özet tablolar hesaplanıyor...")

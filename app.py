@@ -1,27 +1,30 @@
 """
-🎯 BÖLGESEL PERFORMANS ANALİZİ v4
-Basit, Net, Kullanışlı
+🎯 SATIŞ KARAR SİSTEMİ v5
+━━━━━━━━━━━━━━━━━━━━━━━━
+Bu bir dashboard değil, KARAR sistemi.
+3 dakikada teşhis, neden, aksiyon.
 
-Ana Metrik: SATIŞ MİKTARI
-Odak: Mal Grubu bazlı En İyi/Kötü 10
-Nitelik Filtresi: Spot, Grup Spot, Regule, Kasa Aktivitesi, Bölgesel
+Mimari: Excel → Parquet → DuckDB → Karar
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import duckdb
+import tempfile
+import os
 from io import BytesIO
 import warnings
 import gc
+
 warnings.filterwarnings('ignore')
 
 # ============================================================================
 # SAYFA AYARLARI
 # ============================================================================
 st.set_page_config(
-    page_title="Performans Analizi v4",
-    page_icon="📊",
+    page_title="Satış Karar Sistemi",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,703 +33,971 @@ st.set_page_config(
 # SABİTLER
 # ============================================================================
 
-# Sadece bu niteliklere bak
-VALID_NITELIKLER = ['Spot', 'Grup Spot', 'Regule', 'Kasa Aktivitesi', 'Bölgesel']
+# Sadece bu nitelikler analiz edilecek
+GECERLI_NITELIKLER = ['Spot', 'Grup Spot', 'Regule', 'Kasa Aktivitesi', 'Bölgesel']
 
-# Minimum baz (2024'te bu adetten az satanları gösterme)
-MIN_BASE_ADET = 100
+# Kolon eşleştirme (Excel'deki isim → kısa isim)
+KOLON_MAP = {
+    'SM': 'SM',
+    'BS': 'BS',
+    'Mağaza - Anahtar': 'Magaza_Kod',
+    'Mağaza - Orta uzunl.metin': 'Magaza_Ad',
+    'Malzeme Nitelik - Metin': 'Nitelik',
+    'Ürün Grubu - Orta uzunl.metin': 'Urun_Grubu',
+    'Üst Mal Grubu - Orta uzunl.metin': 'Ust_Mal',
+    'Mal Grubu - Orta uzunl.metin': 'Mal_Grubu',
+    'Malzeme Kodu': 'Urun_Kod',
+    'Malzeme Tanımı': 'Urun_Ad',
+    'Satış Miktarı': 'Adet',
+    'Satış Hasılatı (VD)': 'Ciro',
+    'Net Marj': 'Marj',
+    'Fire Tutarı': 'Fire',
+    'Envanter Tutarı': 'Envanter',
+    'Toplam Kampanya Zararı': 'Kampanya_Zarar'
+}
 
-# Gerekli kolonlar
-REQUIRED_COLS = [
-    'SM', 'BS', 'Mağaza - Anahtar', 'Mağaza - Orta uzunl.metin',
-    'Malzeme Nitelik - Metin', 'Ürün Grubu - Orta uzunl.metin',
-    'Üst Mal Grubu - Orta uzunl.metin', 'Mal Grubu - Orta uzunl.metin',
-    'Malzeme Kodu', 'Malzeme Tanımı',
-    'Satış Miktarı', 'Satış Hasılatı (VD)', 'Net Marj',
-    'Fire Tutarı', 'Envanter Tutarı'
-]
+# Okunacak kolonlar (Excel'deki isimler)
+GEREKLI_KOLONLAR = list(KOLON_MAP.keys())
+
+# Numerik kolonlar
+NUMERIK_KOLONLAR = ['Adet', 'Ciro', 'Marj', 'Fire', 'Envanter', 'Kampanya_Zarar']
 
 # ============================================================================
 # CSS
 # ============================================================================
 st.markdown("""
 <style>
-    .main-header {font-size: 2rem; font-weight: 700; color: #1f2937; margin-bottom: 0.5rem;}
-    .sub-header {font-size: 1rem; color: #6b7280; margin-bottom: 1rem;}
-    
-    .kpi-container {display: flex; gap: 1rem; margin: 1rem 0;}
-    .kpi-box {
-        flex: 1; background: white; border: 1px solid #e5e7eb; border-radius: 12px;
-        padding: 1rem; text-align: center;
+    .main-title {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #1e293b;
+        margin-bottom: 0;
     }
-    .kpi-label {font-size: 0.85rem; color: #6b7280; margin-bottom: 0.25rem;}
-    .kpi-value {font-size: 1.8rem; font-weight: 700; color: #1f2937;}
-    .kpi-delta {font-size: 1rem; font-weight: 600;}
-    .kpi-delta-pos {color: #10b981;}
-    .kpi-delta-neg {color: #ef4444;}
+    .sub-title {
+        font-size: 1rem;
+        color: #64748b;
+        margin-bottom: 1.5rem;
+    }
     
+    /* KPI Kartları */
+    .kpi-row {
+        display: flex;
+        gap: 1rem;
+        margin: 1rem 0;
+    }
+    .kpi-card {
+        flex: 1;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 1.25rem;
+        text-align: center;
+    }
+    .kpi-label {
+        font-size: 0.8rem;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .kpi-value {
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: #1e293b;
+        margin: 0.25rem 0;
+    }
+    .kpi-delta {
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    .delta-up { color: #10b981; }
+    .delta-down { color: #ef4444; }
+    
+    /* Karar Kartları */
+    .karar-card {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-left: 4px solid #3b82f6;
+        border-radius: 0 12px 12px 0;
+        padding: 1rem;
+        margin: 0.75rem 0;
+    }
+    .karar-card-red { border-left-color: #ef4444; background: #fef2f2; }
+    .karar-card-green { border-left-color: #10b981; background: #f0fdf4; }
+    .karar-card-yellow { border-left-color: #f59e0b; background: #fffbeb; }
+    
+    .karar-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+    }
+    .karar-title {
+        font-weight: 600;
+        color: #1e293b;
+    }
+    .karar-badge {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-weight: 500;
+    }
+    .badge-red { background: #fee2e2; color: #dc2626; }
+    .badge-green { background: #dcfce7; color: #16a34a; }
+    .badge-yellow { background: #fef3c7; color: #d97706; }
+    
+    .karar-metrics {
+        font-size: 0.85rem;
+        color: #475569;
+        margin: 0.5rem 0;
+    }
+    .karar-neden {
+        font-size: 0.85rem;
+        background: #f1f5f9;
+        padding: 0.5rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+    }
+    .karar-aksiyon {
+        font-size: 0.85rem;
+        color: #0369a1;
+        margin-top: 0.5rem;
+    }
+    
+    /* Section */
     .section-title {
-        font-size: 1.1rem; font-weight: 600; color: #374151;
-        border-bottom: 2px solid #e5e7eb; padding-bottom: 0.5rem;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #334155;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #e2e8f0;
         margin: 1.5rem 0 1rem 0;
     }
-    .section-title-red {border-bottom-color: #ef4444; color: #dc2626;}
-    .section-title-green {border-bottom-color: #10b981; color: #059669;}
     
-    .filter-info {
-        background: #f3f4f6; padding: 0.75rem; border-radius: 8px;
-        font-size: 0.85rem; color: #4b5563; margin-bottom: 1rem;
+    /* Filtre Info */
+    .filter-badge {
+        display: inline-block;
+        background: #f1f5f9;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        color: #475569;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-
 # ============================================================================
-# VERİ YÜKLEME
+# 1. VERİ OKUMA VE PARQUET DÖNÜŞÜMÜ
 # ============================================================================
 
-def load_excel_to_df(file_bytes, year):
-    """Excel'i DataFrame'e yükle ve temizle"""
+def get_temp_path():
+    """Geçici dosya yolu oluştur"""
+    return os.path.join(tempfile.gettempdir(), "karar_sistemi")
+
+
+def excel_to_parquet(file_bytes: bytes, yil: int, temp_dir: str) -> str:
+    """
+    Excel'i oku → optimize et → Parquet'e yaz
+    SADECE 1 KEZ ÇALIŞIR
+    """
     
+    # Parquet dosya yolu
+    parquet_path = os.path.join(temp_dir, f"veri_{yil}.parquet")
+    
+    # Excel'i oku - SADECE gerekli kolonlar
     df = pd.read_excel(
         BytesIO(file_bytes),
-        engine='openpyxl'
+        engine='openpyxl',
+        usecols=lambda x: x.strip() in GEREKLI_KOLONLAR
     )
+    
+    # Kolon isimlerini temizle ve kısalt
     df.columns = df.columns.str.strip()
-    df['YIL'] = year
+    df = df.rename(columns=KOLON_MAP)
     
-    # Sadece geçerli nitelikleri filtrele
-    if 'Malzeme Nitelik - Metin' in df.columns:
-        df = df[df['Malzeme Nitelik - Metin'].isin(VALID_NITELIKLER)]
+    # YIL ekle
+    df['Yil'] = yil
     
-    # Numerik kolonları düzelt
-    for col in ['Satış Miktarı', 'Satış Hasılatı (VD)', 'Net Marj', 'Fire Tutarı', 'Envanter Tutarı']:
+    # Nitelik filtresi - sadece geçerli nitelikler
+    if 'Nitelik' in df.columns:
+        df = df[df['Nitelik'].isin(GECERLI_NITELIKLER)]
+    
+    # Numerik kolonları optimize et (float32)
+    for col in NUMERIK_KOLONLAR:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
     
-    # String kolonları düzelt
-    for col in ['SM', 'BS', 'Mağaza - Anahtar', 'Mağaza - Orta uzunl.metin',
-                'Malzeme Nitelik - Metin', 'Ürün Grubu - Orta uzunl.metin',
-                'Üst Mal Grubu - Orta uzunl.metin', 'Mal Grubu - Orta uzunl.metin',
-                'Malzeme Kodu', 'Malzeme Tanımı']:
+    # String kolonları temizle
+    string_cols = ['SM', 'BS', 'Magaza_Kod', 'Magaza_Ad', 'Nitelik', 
+                   'Urun_Grubu', 'Ust_Mal', 'Mal_Grubu', 'Urun_Kod', 'Urun_Ad']
+    for col in string_cols:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
-            df[col] = df[col].replace(['nan', 'None', 'NaN', ''], '')
+            df[col] = df[col].replace(['nan', 'None', 'NaN', '<NA>'], '')
     
-    return df
+    # Parquet'e yaz
+    df.to_parquet(parquet_path, engine='pyarrow', index=False)
+    
+    satir_sayisi = len(df)
+    del df
+    gc.collect()
+    
+    return parquet_path, satir_sayisi
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_data(_bytes_2024, _bytes_2025, cache_key):
-    """Veriyi yükle ve DuckDB'ye hazırla"""
+def veri_yukle(bytes_2024: bytes, bytes_2025: bytes, cache_key: str) -> dict:
+    """
+    Ana veri yükleme fonksiyonu
+    Excel → Parquet → Filtre seçenekleri
+    """
     
-    progress = st.progress(0, text="2024 verisi yükleniyor...")
-    df_2024 = load_excel_to_df(_bytes_2024, 2024)
-    count_2024 = len(df_2024)
+    # Temp klasör
+    temp_dir = get_temp_path()
+    os.makedirs(temp_dir, exist_ok=True)
     
-    progress.progress(40, text="2025 verisi yükleniyor...")
-    df_2025 = load_excel_to_df(_bytes_2025, 2025)
-    count_2025 = len(df_2025)
+    progress = st.progress(0, text="📂 2024 verisi okunuyor...")
     
-    progress.progress(60, text="Veriler birleştiriliyor...")
-    df_all = pd.concat([df_2024, df_2025], ignore_index=True)
+    # 2024 Excel → Parquet
+    path_2024, sayi_2024 = excel_to_parquet(bytes_2024, 2024, temp_dir)
     
-    del df_2024, df_2025
-    gc.collect()
+    progress.progress(45, text="📂 2025 verisi okunuyor...")
     
-    progress.progress(70, text="Filtre seçenekleri hazırlanıyor...")
+    # 2025 Excel → Parquet
+    path_2025, sayi_2025 = excel_to_parquet(bytes_2025, 2025, temp_dir)
     
-    # DuckDB bağlantısı - DataFrame'den direkt oku
+    progress.progress(80, text="🔧 Filtre seçenekleri hazırlanıyor...")
+    
+    # DuckDB ile filtre seçeneklerini al
     con = duckdb.connect()
-    con.register('veri', df_all)
+    
+    # View oluştur
+    con.execute(f"""
+        CREATE VIEW veri AS
+        SELECT * FROM parquet_scan('{path_2024}')
+        UNION ALL
+        SELECT * FROM parquet_scan('{path_2025}')
+    """)
     
     # Filtre seçenekleri
-    filters = {
-        'sm': con.execute('SELECT DISTINCT SM FROM veri WHERE SM != "" ORDER BY SM').df()['SM'].tolist(),
-        'nitelik': con.execute('SELECT DISTINCT "Malzeme Nitelik - Metin" as n FROM veri ORDER BY n').df()['n'].tolist(),
-        'urun_grubu': con.execute('SELECT DISTINCT "Ürün Grubu - Orta uzunl.metin" as n FROM veri ORDER BY n').df()['n'].tolist(),
-    }
+    filtreler = {}
+    
+    filtreler['sm'] = con.execute(
+        "SELECT DISTINCT SM FROM veri WHERE SM != '' ORDER BY SM"
+    ).fetchdf()['SM'].tolist()
+    
+    filtreler['nitelik'] = con.execute(
+        "SELECT DISTINCT Nitelik FROM veri WHERE Nitelik != '' ORDER BY Nitelik"
+    ).fetchdf()['Nitelik'].tolist()
     
     # BS by SM
-    bs_df = con.execute('SELECT DISTINCT SM, BS FROM veri WHERE BS != "" ORDER BY SM, BS').df()
-    filters['bs_by_sm'] = bs_df.groupby('SM')['BS'].apply(list).to_dict()
+    bs_df = con.execute(
+        "SELECT DISTINCT SM, BS FROM veri WHERE BS != '' ORDER BY SM, BS"
+    ).fetchdf()
+    filtreler['bs_map'] = bs_df.groupby('SM')['BS'].apply(list).to_dict()
     
     # Mağaza by BS
-    mag_df = con.execute('''
-        SELECT DISTINCT BS, "Mağaza - Anahtar" as kod, "Mağaza - Orta uzunl.metin" as ad 
-        FROM veri WHERE kod != "" ORDER BY BS, kod
-    ''').df()
-    filters['magaza_by_bs'] = mag_df.groupby('BS').apply(
-        lambda x: list(zip(x['kod'], x['ad']))
+    mag_df = con.execute("""
+        SELECT DISTINCT BS, Magaza_Kod, Magaza_Ad 
+        FROM veri WHERE Magaza_Kod != '' 
+        ORDER BY BS, Magaza_Kod
+    """).fetchdf()
+    filtreler['magaza_map'] = mag_df.groupby('BS').apply(
+        lambda x: list(zip(x['Magaza_Kod'], x['Magaza_Ad']))
     ).to_dict()
     
+    # Ürün Grubu
+    filtreler['urun_grubu'] = con.execute(
+        "SELECT DISTINCT Urun_Grubu FROM veri WHERE Urun_Grubu != '' ORDER BY Urun_Grubu"
+    ).fetchdf()['Urun_Grubu'].tolist()
+    
     # Üst Mal by Ürün Grubu
-    ust_df = con.execute('''
-        SELECT DISTINCT "Ürün Grubu - Orta uzunl.metin" as ug, "Üst Mal Grubu - Orta uzunl.metin" as umg
-        FROM veri ORDER BY ug, umg
-    ''').df()
-    filters['ust_mal_by_urun'] = ust_df.groupby('ug')['umg'].apply(list).to_dict()
+    ust_df = con.execute("""
+        SELECT DISTINCT Urun_Grubu, Ust_Mal 
+        FROM veri WHERE Ust_Mal != '' 
+        ORDER BY Urun_Grubu, Ust_Mal
+    """).fetchdf()
+    filtreler['ust_mal_map'] = ust_df.groupby('Urun_Grubu')['Ust_Mal'].apply(list).to_dict()
     
-    # Mal by Üst Mal
-    mal_df = con.execute('''
-        SELECT DISTINCT "Üst Mal Grubu - Orta uzunl.metin" as umg, "Mal Grubu - Orta uzunl.metin" as mg
-        FROM veri ORDER BY umg, mg
-    ''').df()
-    filters['mal_by_ust'] = mal_df.groupby('umg')['mg'].apply(list).to_dict()
+    # Mal Grubu by Üst Mal
+    mal_df = con.execute("""
+        SELECT DISTINCT Ust_Mal, Mal_Grubu 
+        FROM veri WHERE Mal_Grubu != '' 
+        ORDER BY Ust_Mal, Mal_Grubu
+    """).fetchdf()
+    filtreler['mal_grubu_map'] = mal_df.groupby('Ust_Mal')['Mal_Grubu'].apply(list).to_dict()
     
-    progress.progress(100, text="Hazır!")
+    con.close()
+    
+    progress.progress(100, text="✅ Hazır!")
     progress.empty()
     
     return {
-        'df': df_all,
-        'filters': filters,
-        'counts': {'2024': count_2024, '2025': count_2025}
+        'path_2024': path_2024,
+        'path_2025': path_2025,
+        'filtreler': filtreler,
+        'sayilar': {'2024': sayi_2024, '2025': sayi_2025}
     }
 
 
 # ============================================================================
-# SORGULAR
+# 2. DUCKDB SORGULARI
 # ============================================================================
 
-def build_where_clause(filters):
-    """Filtre koşullarını SQL WHERE clause'a çevir"""
-    
-    conditions = []
-    
-    if filters.get('sm') and filters['sm'] != 'Tümü':
-        conditions.append(f"SM = '{filters['sm']}'")
-    
-    if filters.get('bs') and filters['bs'] != 'Tümü':
-        conditions.append(f"BS = '{filters['bs']}'")
-    
-    if filters.get('magaza') and filters['magaza'] != 'Tümü':
-        conditions.append(f"\"Mağaza - Anahtar\" = '{filters['magaza']}'")
-    
-    if filters.get('nitelik') and filters['nitelik'] != 'Tümü':
-        conditions.append(f"\"Malzeme Nitelik - Metin\" = '{filters['nitelik']}'")
-    
-    if filters.get('urun_grubu') and filters['urun_grubu'] != 'Tümü':
-        conditions.append(f"\"Ürün Grubu - Orta uzunl.metin\" = '{filters['urun_grubu']}'")
-    
-    if filters.get('ust_mal') and filters['ust_mal'] != 'Tümü':
-        conditions.append(f"\"Üst Mal Grubu - Orta uzunl.metin\" = '{filters['ust_mal']}'")
-    
-    if filters.get('mal_grubu') and filters['mal_grubu'] != 'Tümü':
-        conditions.append(f"\"Mal Grubu - Orta uzunl.metin\" = '{filters['mal_grubu']}'")
-    
-    if conditions:
-        return "WHERE " + " AND ".join(conditions)
-    return ""
+def get_duckdb_connection(path_2024: str, path_2025: str):
+    """DuckDB bağlantısı oluştur"""
+    con = duckdb.connect()
+    con.execute(f"""
+        CREATE VIEW veri AS
+        SELECT * FROM parquet_scan('{path_2024}')
+        UNION ALL
+        SELECT * FROM parquet_scan('{path_2025}')
+    """)
+    return con
 
 
-def get_summary(con, where_clause):
+def build_where(filtreler: dict) -> str:
+    """Filtre koşullarını SQL WHERE'e çevir"""
+    
+    kosullar = []
+    
+    if filtreler.get('sm') and filtreler['sm'] != 'Tümü':
+        kosullar.append(f"SM = '{filtreler['sm']}'")
+    
+    if filtreler.get('bs') and filtreler['bs'] != 'Tümü':
+        kosullar.append(f"BS = '{filtreler['bs']}'")
+    
+    if filtreler.get('magaza') and filtreler['magaza'] != 'Tümü':
+        kosullar.append(f"Magaza_Kod = '{filtreler['magaza']}'")
+    
+    if filtreler.get('nitelik') and filtreler['nitelik'] != 'Tümü':
+        kosullar.append(f"Nitelik = '{filtreler['nitelik']}'")
+    
+    if filtreler.get('urun_grubu') and filtreler['urun_grubu'] != 'Tümü':
+        kosullar.append(f"Urun_Grubu = '{filtreler['urun_grubu']}'")
+    
+    if filtreler.get('ust_mal') and filtreler['ust_mal'] != 'Tümü':
+        kosullar.append(f"Ust_Mal = '{filtreler['ust_mal']}'")
+    
+    if filtreler.get('mal_grubu') and filtreler['mal_grubu'] != 'Tümü':
+        kosullar.append(f"Mal_Grubu = '{filtreler['mal_grubu']}'")
+    
+    return "WHERE " + " AND ".join(kosullar) if kosullar else ""
+
+
+def get_ozet_kpiler(con, where: str) -> dict:
     """Özet KPI'ları getir"""
     
-    query = f"""
+    sql = f"""
         SELECT 
-            YIL,
-            SUM("Satış Miktarı") as adet,
-            SUM("Satış Hasılatı (VD)") as ciro,
-            SUM("Net Marj") as marj,
-            SUM(ABS("Fire Tutarı")) as fire
+            Yil,
+            SUM(Adet) as Adet,
+            SUM(Ciro) as Ciro,
+            SUM(Marj) as Marj,
+            SUM(ABS(Fire)) as Fire,
+            SUM(ABS(Kampanya_Zarar)) as Kampanya
         FROM veri
-        {where_clause}
-        GROUP BY YIL
+        {where}
+        GROUP BY Yil
     """
     
-    df = con.execute(query).df()
+    df = con.execute(sql).fetchdf()
     
-    result = {}
+    sonuc = {}
     for _, row in df.iterrows():
-        year = int(row['YIL'])
-        result[f'adet_{year}'] = row['adet']
-        result[f'ciro_{year}'] = row['ciro']
-        result[f'marj_{year}'] = row['marj']
-        result[f'fire_{year}'] = row['fire']
+        yil = int(row['Yil'])
+        for col in ['Adet', 'Ciro', 'Marj', 'Fire', 'Kampanya']:
+            sonuc[f'{col.lower()}_{yil}'] = row[col]
     
-    # Değişimler
-    for metric in ['adet', 'ciro', 'marj', 'fire']:
-        v2024 = result.get(f'{metric}_2024', 0)
-        v2025 = result.get(f'{metric}_2025', 0)
-        if v2024 and v2024 != 0:
-            result[f'{metric}_change'] = ((v2025 / v2024) - 1) * 100
+    # Değişim hesapla
+    for m in ['adet', 'ciro', 'marj', 'fire', 'kampanya']:
+        v24 = sonuc.get(f'{m}_2024', 0) or 0
+        v25 = sonuc.get(f'{m}_2025', 0) or 0
+        if v24 > 0:
+            sonuc[f'{m}_degisim'] = ((v25 / v24) - 1) * 100
         else:
-            result[f'{metric}_change'] = 0
+            sonuc[f'{m}_degisim'] = 0
     
-    return result
+    return sonuc
 
 
-def get_mal_grubu_performance(con, where_clause, order='ASC', limit=10):
-    """Mal Grubu bazlı performans (en iyi veya en kötü)"""
+def get_mal_grubu_analiz(con, where: str, min_ciro: float, limit: int = 10) -> pd.DataFrame:
+    """
+    Mal Grubu bazında analiz
+    5 soruya cevap verecek metrikler
+    """
     
-    # WHERE clause'a yıl koşulu ekle
-    base_where = where_clause if where_clause else "WHERE 1=1"
+    # Ciro limiti koşulu
+    ciro_kosul = f"AND Ciro_2025 >= {min_ciro}" if min_ciro > 0 else ""
     
-    query = f"""
-        WITH yearly AS (
+    sql = f"""
+        WITH yillik AS (
             SELECT 
-                "Mal Grubu - Orta uzunl.metin" as mal_grubu,
-                "Üst Mal Grubu - Orta uzunl.metin" as ust_mal,
-                YIL,
-                SUM("Satış Miktarı") as adet,
-                SUM("Satış Hasılatı (VD)") as ciro,
-                SUM("Net Marj") as marj,
-                SUM(ABS("Fire Tutarı")) as fire
+                Mal_Grubu,
+                MAX(Ust_Mal) as Ust_Mal,
+                Yil,
+                SUM(Adet) as Adet,
+                SUM(Ciro) as Ciro,
+                SUM(Marj) as Marj,
+                SUM(ABS(Fire)) as Fire,
+                SUM(ABS(Kampanya_Zarar)) as Kampanya
             FROM veri
-            {where_clause}
-            GROUP BY "Mal Grubu - Orta uzunl.metin", "Üst Mal Grubu - Orta uzunl.metin", YIL
+            {where}
+            GROUP BY Mal_Grubu, Yil
         ),
-        pivoted AS (
+        pivot AS (
             SELECT 
-                mal_grubu,
-                MAX(ust_mal) as ust_mal,
-                SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END) as adet_2024,
-                SUM(CASE WHEN YIL = 2025 THEN adet ELSE 0 END) as adet_2025,
-                SUM(CASE WHEN YIL = 2024 THEN ciro ELSE 0 END) as ciro_2024,
-                SUM(CASE WHEN YIL = 2025 THEN ciro ELSE 0 END) as ciro_2025,
-                SUM(CASE WHEN YIL = 2024 THEN marj ELSE 0 END) as marj_2024,
-                SUM(CASE WHEN YIL = 2025 THEN marj ELSE 0 END) as marj_2025,
-                SUM(CASE WHEN YIL = 2024 THEN fire ELSE 0 END) as fire_2024,
-                SUM(CASE WHEN YIL = 2025 THEN fire ELSE 0 END) as fire_2025
-            FROM yearly
-            GROUP BY mal_grubu
+                Mal_Grubu,
+                MAX(Ust_Mal) as Ust_Mal,
+                SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+                SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+                SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+                SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+                SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+                SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+                SUM(CASE WHEN Yil=2024 THEN Fire ELSE 0 END) as Fire_2024,
+                SUM(CASE WHEN Yil=2025 THEN Fire ELSE 0 END) as Fire_2025,
+                SUM(CASE WHEN Yil=2024 THEN Kampanya ELSE 0 END) as Kampanya_2024,
+                SUM(CASE WHEN Yil=2025 THEN Kampanya ELSE 0 END) as Kampanya_2025
+            FROM yillik
+            GROUP BY Mal_Grubu
+        ),
+        toplam AS (
+            SELECT 
+                SUM(Ciro_2024) as T_Ciro_2024,
+                SUM(Ciro_2025) as T_Ciro_2025
+            FROM pivot
         )
         SELECT 
-            *,
-            CASE WHEN adet_2024 > 0 THEN ((adet_2025 / adet_2024) - 1) * 100 ELSE 0 END as adet_change,
-            CASE WHEN ciro_2024 > 0 THEN ((ciro_2025 / ciro_2024) - 1) * 100 ELSE 0 END as ciro_change,
-            CASE WHEN marj_2024 > 0 THEN ((marj_2025 / marj_2024) - 1) * 100 ELSE 0 END as marj_change,
-            CASE WHEN fire_2024 > 0 THEN ((fire_2025 / fire_2024) - 1) * 100 ELSE 0 END as fire_change
-        FROM pivoted
-        WHERE adet_2024 >= {MIN_BASE_ADET}
-        ORDER BY adet_change {order}
-        LIMIT {limit}
+            p.*,
+            -- Pay hesabı
+            CASE WHEN t.T_Ciro_2024 > 0 THEN p.Ciro_2024 / t.T_Ciro_2024 * 100 ELSE 0 END as Pay_2024,
+            CASE WHEN t.T_Ciro_2025 > 0 THEN p.Ciro_2025 / t.T_Ciro_2025 * 100 ELSE 0 END as Pay_2025,
+            -- Değişim hesapları
+            CASE WHEN p.Adet_2024 > 0 THEN ((p.Adet_2025 / p.Adet_2024) - 1) * 100 ELSE 0 END as Adet_Deg,
+            CASE WHEN p.Ciro_2024 > 0 THEN ((p.Ciro_2025 / p.Ciro_2024) - 1) * 100 ELSE 0 END as Ciro_Deg,
+            CASE WHEN p.Marj_2024 > 0 THEN ((p.Marj_2025 / p.Marj_2024) - 1) * 100 ELSE 0 END as Marj_Deg,
+            CASE WHEN p.Fire_2024 > 0 THEN ((p.Fire_2025 / p.Fire_2024) - 1) * 100 ELSE 0 END as Fire_Deg,
+            CASE WHEN p.Kampanya_2024 > 0 THEN ((p.Kampanya_2025 / p.Kampanya_2024) - 1) * 100 ELSE 0 END as Kampanya_Deg,
+            -- Marj oranı
+            CASE WHEN p.Ciro_2024 > 0 THEN p.Marj_2024 / p.Ciro_2024 * 100 ELSE 0 END as Marj_Oran_2024,
+            CASE WHEN p.Ciro_2025 > 0 THEN p.Marj_2025 / p.Ciro_2025 * 100 ELSE 0 END as Marj_Oran_2025
+        FROM pivot p, toplam t
+        WHERE p.Mal_Grubu != ''
+        {ciro_kosul}
+        ORDER BY p.Ciro_2025 DESC
     """
     
-    return con.execute(query).df()
+    return con.execute(sql).fetchdf()
 
 
-def get_product_details(con, mal_grubu, where_clause):
+def get_urun_detay(con, mal_grubu: str, where: str) -> pd.DataFrame:
     """Mal grubu içindeki ürün detayları"""
     
-    base_where = where_clause if where_clause else "WHERE 1=1"
-    mal_condition = f"\"Mal Grubu - Orta uzunl.metin\" = '{mal_grubu}'"
-    
-    if where_clause:
-        full_where = f"{where_clause} AND {mal_condition}"
+    mal_kosul = f"Mal_Grubu = '{mal_grubu}'"
+    if where:
+        full_where = f"{where} AND {mal_kosul}"
     else:
-        full_where = f"WHERE {mal_condition}"
+        full_where = f"WHERE {mal_kosul}"
     
-    query = f"""
-        WITH yearly AS (
+    sql = f"""
+        WITH yillik AS (
             SELECT 
-                "Malzeme Kodu" as kod,
-                "Malzeme Tanımı" as urun,
-                YIL,
-                SUM("Satış Miktarı") as adet,
-                SUM("Satış Hasılatı (VD)") as ciro,
-                SUM("Net Marj") as marj,
-                SUM(ABS("Fire Tutarı")) as fire
+                Urun_Kod,
+                MAX(Urun_Ad) as Urun_Ad,
+                Yil,
+                SUM(Adet) as Adet,
+                SUM(Ciro) as Ciro,
+                SUM(Marj) as Marj,
+                SUM(ABS(Fire)) as Fire
             FROM veri
             {full_where}
-            GROUP BY "Malzeme Kodu", "Malzeme Tanımı", YIL
-        ),
-        pivoted AS (
-            SELECT 
-                kod,
-                MAX(urun) as urun,
-                SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END) as adet_2024,
-                SUM(CASE WHEN YIL = 2025 THEN adet ELSE 0 END) as adet_2025,
-                SUM(CASE WHEN YIL = 2024 THEN ciro ELSE 0 END) as ciro_2024,
-                SUM(CASE WHEN YIL = 2025 THEN ciro ELSE 0 END) as ciro_2025,
-                SUM(CASE WHEN YIL = 2024 THEN marj ELSE 0 END) as marj_2024,
-                SUM(CASE WHEN YIL = 2025 THEN marj ELSE 0 END) as marj_2025,
-                SUM(CASE WHEN YIL = 2024 THEN fire ELSE 0 END) as fire_2024,
-                SUM(CASE WHEN YIL = 2025 THEN fire ELSE 0 END) as fire_2025
-            FROM yearly
-            GROUP BY kod
+            GROUP BY Urun_Kod, Yil
         )
         SELECT 
-            *,
-            CASE WHEN adet_2024 > 0 THEN ((adet_2025 / adet_2024) - 1) * 100 ELSE 0 END as adet_change,
-            CASE WHEN ciro_2024 > 0 THEN ((ciro_2025 / ciro_2024) - 1) * 100 ELSE 0 END as ciro_change,
-            CASE WHEN marj_2024 > 0 THEN ((marj_2025 / marj_2024) - 1) * 100 ELSE 0 END as marj_change,
-            CASE WHEN fire_2024 > 0 THEN ((fire_2025 / fire_2024) - 1) * 100 ELSE 0 END as fire_change
-        FROM pivoted
-        ORDER BY adet_2025 DESC
+            Urun_Kod,
+            MAX(Urun_Ad) as Urun_Ad,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+            SUM(CASE WHEN Yil=2025 THEN Fire ELSE 0 END) as Fire_2025,
+            CASE WHEN SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) > 0 
+                 THEN ((SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) / 
+                        SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END)) - 1) * 100 
+                 ELSE 0 END as Adet_Deg
+        FROM yillik
+        GROUP BY Urun_Kod
+        ORDER BY Adet_2025 DESC
     """
     
-    return con.execute(query).df()
-
-
-def get_filtered_data_for_excel(con, where_clause):
-    """Excel için filtrelenmiş veri"""
-    
-    # Mal Grubu özet
-    mal_grubu = con.execute(f"""
-        WITH yearly AS (
-            SELECT 
-                "Mal Grubu - Orta uzunl.metin" as mal_grubu,
-                "Üst Mal Grubu - Orta uzunl.metin" as ust_mal,
-                YIL,
-                SUM("Satış Miktarı") as adet,
-                SUM("Satış Hasılatı (VD)") as ciro,
-                SUM("Net Marj") as marj,
-                SUM(ABS("Fire Tutarı")) as fire
-            FROM veri
-            {where_clause}
-            GROUP BY "Mal Grubu - Orta uzunl.metin", "Üst Mal Grubu - Orta uzunl.metin", YIL
-        )
-        SELECT 
-            mal_grubu as "Mal Grubu",
-            MAX(ust_mal) as "Üst Mal Grubu",
-            SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END) as "Adet 2024",
-            SUM(CASE WHEN YIL = 2025 THEN adet ELSE 0 END) as "Adet 2025",
-            ROUND(CASE WHEN SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END) > 0 
-                  THEN ((SUM(CASE WHEN YIL = 2025 THEN adet ELSE 0 END) / SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END)) - 1) * 100 
-                  ELSE 0 END, 1) as "Adet Değişim %",
-            SUM(CASE WHEN YIL = 2024 THEN ciro ELSE 0 END) as "Ciro 2024",
-            SUM(CASE WHEN YIL = 2025 THEN ciro ELSE 0 END) as "Ciro 2025",
-            ROUND(CASE WHEN SUM(CASE WHEN YIL = 2024 THEN ciro ELSE 0 END) > 0 
-                  THEN ((SUM(CASE WHEN YIL = 2025 THEN ciro ELSE 0 END) / SUM(CASE WHEN YIL = 2024 THEN ciro ELSE 0 END)) - 1) * 100 
-                  ELSE 0 END, 1) as "Ciro Değişim %",
-            SUM(CASE WHEN YIL = 2024 THEN marj ELSE 0 END) as "Marj 2024",
-            SUM(CASE WHEN YIL = 2025 THEN marj ELSE 0 END) as "Marj 2025",
-            SUM(CASE WHEN YIL = 2025 THEN fire ELSE 0 END) as "Fire 2025"
-        FROM yearly
-        GROUP BY mal_grubu
-        ORDER BY "Adet Değişim %" ASC
-    """).df()
-    
-    # Ürün detay
-    urun_detay = con.execute(f"""
-        WITH yearly AS (
-            SELECT 
-                "Malzeme Kodu" as kod,
-                "Malzeme Tanımı" as urun,
-                "Mal Grubu - Orta uzunl.metin" as mal_grubu,
-                YIL,
-                SUM("Satış Miktarı") as adet,
-                SUM("Satış Hasılatı (VD)") as ciro,
-                SUM("Net Marj") as marj,
-                SUM(ABS("Fire Tutarı")) as fire
-            FROM veri
-            {where_clause}
-            GROUP BY "Malzeme Kodu", "Malzeme Tanımı", "Mal Grubu - Orta uzunl.metin", YIL
-        )
-        SELECT 
-            kod as "Malzeme Kodu",
-            MAX(urun) as "Ürün Adı",
-            MAX(mal_grubu) as "Mal Grubu",
-            SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END) as "Adet 2024",
-            SUM(CASE WHEN YIL = 2025 THEN adet ELSE 0 END) as "Adet 2025",
-            ROUND(CASE WHEN SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END) > 0 
-                  THEN ((SUM(CASE WHEN YIL = 2025 THEN adet ELSE 0 END) / SUM(CASE WHEN YIL = 2024 THEN adet ELSE 0 END)) - 1) * 100 
-                  ELSE 0 END, 1) as "Adet Değişim %",
-            SUM(CASE WHEN YIL = 2024 THEN ciro ELSE 0 END) as "Ciro 2024",
-            SUM(CASE WHEN YIL = 2025 THEN ciro ELSE 0 END) as "Ciro 2025",
-            SUM(CASE WHEN YIL = 2025 THEN fire ELSE 0 END) as "Fire 2025"
-        FROM yearly
-        GROUP BY kod
-        ORDER BY "Adet 2025" DESC
-    """).df()
-    
-    return {'mal_grubu': mal_grubu, 'urun_detay': urun_detay}
+    return con.execute(sql).fetchdf()
 
 
 # ============================================================================
-# EXCEL RAPOR
+# 3. OTOMATİK YORUM MOTORU
 # ============================================================================
 
-def create_excel_report(con, where_clause, filter_desc):
-    """Filtreye göre Excel raporu"""
+def neden_tespit(row: pd.Series) -> tuple:
+    """
+    Otomatik neden tespiti ve aksiyon önerisi
+    Returns: (neden, aksiyon, renk)
+    """
+    
+    marj_deg = row.get('Marj_Deg', 0) or 0
+    adet_deg = row.get('Adet_Deg', 0) or 0
+    fire_deg = row.get('Fire_Deg', 0) or 0
+    kampanya_deg = row.get('Kampanya_Deg', 0) or 0
+    pay_2024 = row.get('Pay_2024', 0) or 0
+    pay_2025 = row.get('Pay_2025', 0) or 0
+    pay_degisim = pay_2025 - pay_2024
+    
+    # Kural 1: Kampanya zararı artıyor + Marj düşüyor
+    if kampanya_deg > 30 and marj_deg < -10:
+        return (
+            "🏷️ Kampanya kaynaklı marj erimesi",
+            "Kampanya karlılığını analiz et, düşük marjlı promosyonları azalt",
+            "yellow"
+        )
+    
+    # Kural 2: Fire patlıyor
+    if fire_deg > 50:
+        return (
+            "🔥 Fire artışı kritik",
+            "SKT kontrolü yap, sipariş miktarlarını ve raf düzenini gözden geçir",
+            "red"
+        )
+    
+    # Kural 3: Satış düşüyor + Fire yok
+    if adet_deg < -15 and fire_deg < 20:
+        return (
+            "📦 Bulunurluk/yerleşim problemi",
+            "Raf yerleşimini kontrol et, ürün bulunurluğunu sorgula",
+            "yellow"
+        )
+    
+    # Kural 4: Satış düşüyor + Fire artıyor
+    if adet_deg < -10 and fire_deg > 30:
+        return (
+            "⚠️ Stok/SKT problemi",
+            "Sipariş miktarlarını düşür, fire takibini sıkılaştır",
+            "red"
+        )
+    
+    # Kural 5: Pay kaybı
+    if pay_degisim < -1 and adet_deg < 0:
+        return (
+            "📉 Pazar payı kaybı",
+            "Kategori yönetimini ve fiyatlamayı gözden geçir",
+            "yellow"
+        )
+    
+    # Kural 6: Marj erimesi (diğer nedenlerden bağımsız)
+    if marj_deg < -20:
+        return (
+            "💰 Marj erimesi",
+            "SMM değişikliği ve fiyatlama stratejisini kontrol et",
+            "yellow"
+        )
+    
+    # Kural 7: Pozitif - Çok satan & pay kazanan
+    if adet_deg > 20 and pay_degisim > 0.5:
+        return (
+            "✅ Başarılı performans",
+            "Bu ürün grubunun başarı faktörlerini diğer kategorilere uygula",
+            "green"
+        )
+    
+    # Kural 8: Az satan ama pay kazanan
+    if adet_deg < 0 and pay_degisim > 0:
+        return (
+            "🎯 Nispi başarı",
+            "Genel düşüşe rağmen pay artışı var, analiz et",
+            "green"
+        )
+    
+    # Default
+    if adet_deg < 0:
+        return ("📊 Performans düşüşü", "Detaylı analiz gerekli", "yellow")
+    else:
+        return ("📊 Normal performans", "-", "green")
+
+
+# ============================================================================
+# 4. EXCEL RAPOR
+# ============================================================================
+
+def excel_rapor_olustur(con, where: str, min_ciro: float, filtre_aciklama: str) -> BytesIO:
+    """Filtreye göre Excel raporu oluştur"""
     
     output = BytesIO()
     
-    data = get_filtered_data_for_excel(con, where_clause)
+    # Analiz verisini al
+    df_analiz = get_mal_grubu_analiz(con, where, min_ciro, limit=1000)
+    
+    # Neden ve aksiyon ekle
+    if not df_analiz.empty:
+        df_analiz['Neden'] = ''
+        df_analiz['Aksiyon'] = ''
+        for idx, row in df_analiz.iterrows():
+            neden, aksiyon, _ = neden_tespit(row)
+            df_analiz.at[idx, 'Neden'] = neden
+            df_analiz.at[idx, 'Aksiyon'] = aksiyon
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Filtre bilgisi
-        info_df = pd.DataFrame([{'Filtre': filter_desc, 'Tarih': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}])
-        info_df.to_excel(writer, sheet_name='Bilgi', index=False)
+        # Sayfa 1: Özet Bilgi
+        ozet = pd.DataFrame([{
+            'Filtre': filtre_aciklama,
+            'Min Ciro Limiti': f"₺{min_ciro:,.0f}",
+            'Rapor Tarihi': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'),
+            'Kayıt Sayısı': len(df_analiz)
+        }])
+        ozet.to_excel(writer, sheet_name='Bilgi', index=False)
         
-        # Mal Grubu özet
-        data['mal_grubu'].to_excel(writer, sheet_name='Mal Grubu Özet', index=False)
+        # Sayfa 2: En Kötü Performans (Adet düşüşüne göre)
+        en_kotu = df_analiz.nsmallest(20, 'Adet_Deg')[
+            ['Mal_Grubu', 'Ust_Mal', 'Adet_2024', 'Adet_2025', 'Adet_Deg', 
+             'Ciro_Deg', 'Marj_Deg', 'Fire_Deg', 'Neden', 'Aksiyon']
+        ]
+        en_kotu.to_excel(writer, sheet_name='En Kötü 20', index=False)
         
-        # Ürün detay
-        data['urun_detay'].to_excel(writer, sheet_name='Ürün Detay', index=False)
+        # Sayfa 3: En İyi Performans
+        en_iyi = df_analiz.nlargest(20, 'Adet_Deg')[
+            ['Mal_Grubu', 'Ust_Mal', 'Adet_2024', 'Adet_2025', 'Adet_Deg', 
+             'Ciro_Deg', 'Marj_Deg', 'Fire_Deg', 'Neden', 'Aksiyon']
+        ]
+        en_iyi.to_excel(writer, sheet_name='En İyi 20', index=False)
+        
+        # Sayfa 4: Tüm Veriler
+        df_analiz.to_excel(writer, sheet_name='Tüm Mal Grupları', index=False)
     
     output.seek(0)
     return output
 
 
 # ============================================================================
-# UI
+# 5. UI BİLEŞENLERİ
 # ============================================================================
 
-def render_sidebar(filter_options):
+def sidebar_filtreler(filtre_options: dict) -> dict:
     """Sol panel filtreleri"""
     
     st.sidebar.markdown("## 🎛️ FİLTRELER")
     
-    # Organizasyon filtreleri
+    # === Organizasyon ===
     st.sidebar.markdown("### 📍 Organizasyon")
     
-    sm_list = ['Tümü'] + filter_options.get('sm', [])
-    selected_sm = st.sidebar.selectbox('SM', sm_list, key='sm')
+    sm_list = ['Tümü'] + filtre_options.get('sm', [])
+    secili_sm = st.sidebar.selectbox('SM', sm_list)
     
     # BS (SM'ye bağlı)
-    if selected_sm != 'Tümü':
-        bs_opts = filter_options.get('bs_by_sm', {}).get(selected_sm, [])
+    if secili_sm != 'Tümü':
+        bs_opts = filtre_options.get('bs_map', {}).get(secili_sm, [])
     else:
         bs_opts = []
-        for bs_list in filter_options.get('bs_by_sm', {}).values():
-            bs_opts.extend(bs_list)
+        for v in filtre_options.get('bs_map', {}).values():
+            bs_opts.extend(v)
         bs_opts = sorted(set(bs_opts))
     
     bs_list = ['Tümü'] + bs_opts
-    selected_bs = st.sidebar.selectbox('BS', bs_list, key='bs')
+    secili_bs = st.sidebar.selectbox('BS', bs_list)
     
     # Mağaza (BS'ye bağlı)
-    if selected_bs != 'Tümü':
-        mag_opts = filter_options.get('magaza_by_bs', {}).get(selected_bs, [])
-        mag_list = ['Tümü'] + [f"{kod} - {ad}" for kod, ad in mag_opts]
+    if secili_bs != 'Tümü':
+        mag_opts = filtre_options.get('magaza_map', {}).get(secili_bs, [])
+        mag_list = ['Tümü'] + [f"{k} - {a}" for k, a in mag_opts]
     else:
         mag_list = ['Tümü']
     
-    selected_mag = st.sidebar.selectbox('Mağaza', mag_list, key='mag')
-    selected_mag_kod = selected_mag.split(' - ')[0] if selected_mag != 'Tümü' else 'Tümü'
+    secili_mag = st.sidebar.selectbox('Mağaza', mag_list)
+    secili_mag_kod = secili_mag.split(' - ')[0] if secili_mag != 'Tümü' else 'Tümü'
     
     st.sidebar.markdown("---")
     
-    # Ürün filtreleri
+    # === Ürün Hiyerarşisi ===
     st.sidebar.markdown("### 📦 Ürün")
     
-    nitelik_list = ['Tümü'] + filter_options.get('nitelik', [])
-    selected_nitelik = st.sidebar.selectbox('Nitelik', nitelik_list, key='nitelik')
+    nitelik_list = ['Tümü'] + filtre_options.get('nitelik', [])
+    secili_nitelik = st.sidebar.selectbox('Nitelik', nitelik_list)
     
-    urun_list = ['Tümü'] + filter_options.get('urun_grubu', [])
-    selected_urun = st.sidebar.selectbox('Ürün Grubu', urun_list, key='urun')
+    urun_grubu_list = ['Tümü'] + filtre_options.get('urun_grubu', [])
+    secili_urun_grubu = st.sidebar.selectbox('Ürün Grubu', urun_grubu_list)
     
     # Üst Mal (Ürün Grubuna bağlı)
-    if selected_urun != 'Tümü':
-        ust_opts = filter_options.get('ust_mal_by_urun', {}).get(selected_urun, [])
+    if secili_urun_grubu != 'Tümü':
+        ust_opts = filtre_options.get('ust_mal_map', {}).get(secili_urun_grubu, [])
     else:
         ust_opts = []
-        for ust_list in filter_options.get('ust_mal_by_urun', {}).values():
-            ust_opts.extend(ust_list)
+        for v in filtre_options.get('ust_mal_map', {}).values():
+            ust_opts.extend(v)
         ust_opts = sorted(set(ust_opts))
     
     ust_list = ['Tümü'] + ust_opts
-    selected_ust = st.sidebar.selectbox('Üst Mal Grubu', ust_list, key='ust')
+    secili_ust = st.sidebar.selectbox('Üst Mal Grubu', ust_list)
     
     # Mal Grubu (Üst Mal'a bağlı)
-    if selected_ust != 'Tümü':
-        mal_opts = filter_options.get('mal_by_ust', {}).get(selected_ust, [])
+    if secili_ust != 'Tümü':
+        mal_opts = filtre_options.get('mal_grubu_map', {}).get(secili_ust, [])
     else:
         mal_opts = []
-        for mal_list in filter_options.get('mal_by_ust', {}).values():
-            mal_opts.extend(mal_list)
+        for v in filtre_options.get('mal_grubu_map', {}).values():
+            mal_opts.extend(v)
         mal_opts = sorted(set(mal_opts))
     
     mal_list = ['Tümü'] + mal_opts
-    selected_mal = st.sidebar.selectbox('Mal Grubu', mal_list, key='mal')
+    secili_mal = st.sidebar.selectbox('Mal Grubu', mal_list)
+    
+    st.sidebar.markdown("---")
+    
+    # === Alt Limit ===
+    st.sidebar.markdown("### 📊 Alt Limit")
+    min_ciro = st.sidebar.number_input(
+        '2025 Min. Ciro (₺)', 
+        min_value=0, 
+        max_value=1000000, 
+        value=10000, 
+        step=5000,
+        help="Bu tutarın altındaki mal grupları analize dahil edilmez"
+    )
     
     return {
-        'sm': selected_sm,
-        'bs': selected_bs,
-        'magaza': selected_mag_kod,
-        'nitelik': selected_nitelik,
-        'urun_grubu': selected_urun,
-        'ust_mal': selected_ust,
-        'mal_grubu': selected_mal
+        'sm': secili_sm,
+        'bs': secili_bs,
+        'magaza': secili_mag_kod,
+        'nitelik': secili_nitelik,
+        'urun_grubu': secili_urun_grubu,
+        'ust_mal': secili_ust,
+        'mal_grubu': secili_mal,
+        'min_ciro': min_ciro
     }
 
 
-def get_filter_description(filters):
-    """Filtre açıklaması"""
+def filtre_aciklamasi(f: dict) -> str:
+    """Filtre açıklaması oluştur"""
     
-    parts = []
-    if filters['sm'] != 'Tümü':
-        parts.append(f"SM: {filters['sm']}")
-    if filters['bs'] != 'Tümü':
-        parts.append(f"BS: {filters['bs']}")
-    if filters['magaza'] != 'Tümü':
-        parts.append(f"Mağaza: {filters['magaza']}")
-    if filters['nitelik'] != 'Tümü':
-        parts.append(f"Nitelik: {filters['nitelik']}")
-    if filters['urun_grubu'] != 'Tümü':
-        parts.append(f"Ürün Grubu: {filters['urun_grubu']}")
-    if filters['ust_mal'] != 'Tümü':
-        parts.append(f"Üst Mal: {filters['ust_mal']}")
-    if filters['mal_grubu'] != 'Tümü':
-        parts.append(f"Mal Grubu: {filters['mal_grubu']}")
+    parcalar = []
+    if f['sm'] != 'Tümü': parcalar.append(f"SM: {f['sm']}")
+    if f['bs'] != 'Tümü': parcalar.append(f"BS: {f['bs']}")
+    if f['magaza'] != 'Tümü': parcalar.append(f"Mağaza: {f['magaza']}")
+    if f['nitelik'] != 'Tümü': parcalar.append(f"Nitelik: {f['nitelik']}")
+    if f['urun_grubu'] != 'Tümü': parcalar.append(f"Ürün Grubu: {f['urun_grubu']}")
+    if f['ust_mal'] != 'Tümü': parcalar.append(f"Üst Mal: {f['ust_mal']}")
+    if f['mal_grubu'] != 'Tümü': parcalar.append(f"Mal Grubu: {f['mal_grubu']}")
     
-    return " | ".join(parts) if parts else "Tüm Veriler"
+    return " | ".join(parcalar) if parcalar else "Tüm Veriler"
 
 
-def render_kpis(summary):
+def kpi_goster(ozet: dict):
     """KPI kartları"""
     
-    col1, col2, col3, col4 = st.columns(4)
-    
-    metrics = [
-        ('📦 Satış Adedi', 'adet', '{:,.0f}'),
-        ('💰 Ciro', 'ciro', '₺{:,.0f}'),
-        ('📈 Marj', 'marj', '₺{:,.0f}'),
-        ('🔥 Fire', 'fire', '₺{:,.0f}')
+    metrikler = [
+        ('📦 Satış Adedi', 'adet', '{:,.0f}', False),
+        ('💰 Ciro', 'ciro', '₺{:,.0f}', False),
+        ('📈 Marj', 'marj', '₺{:,.0f}', False),
+        ('🔥 Fire', 'fire', '₺{:,.0f}', True),  # Fire için ters mantık
     ]
     
-    for col, (label, key, fmt) in zip([col1, col2, col3, col4], metrics):
+    cols = st.columns(4)
+    
+    for col, (label, key, fmt, ters) in zip(cols, metrikler):
         with col:
-            val_2025 = summary.get(f'{key}_2025', 0)
-            change = summary.get(f'{key}_change', 0)
+            deger = ozet.get(f'{key}_2025', 0) or 0
+            degisim = ozet.get(f'{key}_degisim', 0) or 0
             
-            delta_class = 'kpi-delta-pos' if change > 0 else 'kpi-delta-neg'
-            if key == 'fire':  # Fire için ters mantık
-                delta_class = 'kpi-delta-neg' if change > 0 else 'kpi-delta-pos'
+            if ters:
+                delta_class = 'delta-down' if degisim > 0 else 'delta-up'
+            else:
+                delta_class = 'delta-up' if degisim > 0 else 'delta-down'
+            
+            isaret = '+' if degisim > 0 else ''
             
             st.markdown(f"""
-            <div class="kpi-box">
+            <div class="kpi-card">
                 <div class="kpi-label">{label}</div>
-                <div class="kpi-value">{fmt.format(val_2025)}</div>
-                <div class="kpi-delta {delta_class}">{'+' if change > 0 else ''}{change:.1f}%</div>
+                <div class="kpi-value">{fmt.format(deger)}</div>
+                <div class="kpi-delta {delta_class}">{isaret}{degisim:.1f}%</div>
             </div>
             """, unsafe_allow_html=True)
 
 
-def render_worst_best(con, where_clause):
-    """En kötü ve en iyi 10 mal grubu"""
+def karar_kartlari_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = False):
+    """Karar kartlarını göster"""
     
-    col1, col2 = st.columns(2)
+    st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
     
-    with col1:
-        st.markdown('<p class="section-title section-title-red">🔴 EN KÖTÜ 10 MAL GRUBU (Adet Değişimi)</p>', unsafe_allow_html=True)
-        worst = get_mal_grubu_performance(con, where_clause, 'ASC', 10)
+    if df.empty:
+        st.info("Gösterilecek veri yok")
+        return
+    
+    # Sırala
+    if ters:
+        df_sorted = df.nlargest(limit, 'Adet_Deg')
+    else:
+        df_sorted = df.nsmallest(limit, 'Adet_Deg')
+    
+    for idx, row in df_sorted.iterrows():
+        mal_grubu = row['Mal_Grubu']
+        adet_deg = row.get('Adet_Deg', 0) or 0
+        ciro_deg = row.get('Ciro_Deg', 0) or 0
+        marj_deg = row.get('Marj_Deg', 0) or 0
+        fire_deg = row.get('Fire_Deg', 0) or 0
         
-        if worst.empty:
-            st.info("Veri bulunamadı")
-        else:
-            for idx, row in worst.iterrows():
-                mal = row['mal_grubu']
-                adet_ch = row['adet_change']
-                ciro_ch = row['ciro_change']
-                marj_ch = row['marj_change']
-                
-                with st.expander(f"**{mal}** → Adet: {adet_ch:+.1f}%"):
-                    st.markdown(f"""
-                    - **Adet**: {row['adet_2024']:,.0f} → {row['adet_2025']:,.0f} ({adet_ch:+.1f}%)
-                    - **Ciro**: ₺{row['ciro_2024']:,.0f} → ₺{row['ciro_2025']:,.0f} ({ciro_ch:+.1f}%)
-                    - **Marj**: ₺{row['marj_2024']:,.0f} → ₺{row['marj_2025']:,.0f} ({marj_ch:+.1f}%)
-                    - **Fire 2025**: ₺{row['fire_2025']:,.0f}
-                    """)
-                    
-                    if st.button(f"📋 Ürünleri Göster", key=f"worst_{idx}"):
-                        products = get_product_details(con, mal, where_clause)
-                        st.dataframe(products, use_container_width=True, hide_index=True)
-    
-    with col2:
-        st.markdown('<p class="section-title section-title-green">🟢 EN İYİ 10 MAL GRUBU (Adet Değişimi)</p>', unsafe_allow_html=True)
-        best = get_mal_grubu_performance(con, where_clause, 'DESC', 10)
+        neden, aksiyon, renk = neden_tespit(row)
         
-        if best.empty:
-            st.info("Veri bulunamadı")
-        else:
-            for idx, row in best.iterrows():
-                mal = row['mal_grubu']
-                adet_ch = row['adet_change']
-                ciro_ch = row['ciro_change']
-                marj_ch = row['marj_change']
-                
-                with st.expander(f"**{mal}** → Adet: {adet_ch:+.1f}%"):
-                    st.markdown(f"""
-                    - **Adet**: {row['adet_2024']:,.0f} → {row['adet_2025']:,.0f} ({adet_ch:+.1f}%)
-                    - **Ciro**: ₺{row['ciro_2024']:,.0f} → ₺{row['ciro_2025']:,.0f} ({ciro_ch:+.1f}%)
-                    - **Marj**: ₺{row['marj_2024']:,.0f} → ₺{row['marj_2025']:,.0f} ({marj_ch:+.1f}%)
-                    - **Fire 2025**: ₺{row['fire_2025']:,.0f}
-                    """)
-                    
-                    if st.button(f"📋 Ürünleri Göster", key=f"best_{idx}"):
-                        products = get_product_details(con, mal, where_clause)
-                        st.dataframe(products, use_container_width=True, hide_index=True)
+        card_class = f"karar-card karar-card-{renk}"
+        badge_class = f"karar-badge badge-{renk}"
+        
+        with st.expander(f"**{mal_grubu}** → Adet: {adet_deg:+.1f}%", expanded=False):
+            st.markdown(f"""
+            <div class="{card_class}">
+                <div class="karar-header">
+                    <span class="karar-title">{row.get('Ust_Mal', '-')}</span>
+                    <span class="{badge_class}">{neden.split(' ')[0]}</span>
+                </div>
+                <div class="karar-metrics">
+                    📦 Adet: {row.get('Adet_2024', 0):,.0f} → {row.get('Adet_2025', 0):,.0f} ({adet_deg:+.1f}%)<br>
+                    💰 Ciro: ₺{row.get('Ciro_2024', 0):,.0f} → ₺{row.get('Ciro_2025', 0):,.0f} ({ciro_deg:+.1f}%)<br>
+                    📈 Marj: {marj_deg:+.1f}% | 🔥 Fire: {fire_deg:+.1f}%
+                </div>
+                <div class="karar-neden">
+                    <strong>Neden:</strong> {neden}
+                </div>
+                <div class="karar-aksiyon">
+                    💡 <strong>Aksiyon:</strong> {aksiyon}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Ürün detay butonu
+            if st.button(f"📋 Ürünleri Göster", key=f"urun_{idx}_{mal_grubu}"):
+                st.session_state[f'show_urun_{mal_grubu}'] = True
+            
+            if st.session_state.get(f'show_urun_{mal_grubu}'):
+                # Bu fonksiyon main'de çağrılacak
+                st.session_state['selected_mal_grubu'] = mal_grubu
 
 
 # ============================================================================
-# MAIN
+# 6. MAIN
 # ============================================================================
 
 def main():
-    st.markdown('<h1 class="main-header">📊 Performans Analizi</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Kasım 2024 → Kasım 2025 | Ana Metrik: Satış Miktarı</p>', unsafe_allow_html=True)
+    """Ana uygulama"""
+    
+    st.markdown('<h1 class="main-title">🎯 Satış Karar Sistemi</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-title">Kasım 2024 → Kasım 2025 | 3 dakikada teşhis, neden, aksiyon</p>', unsafe_allow_html=True)
     
     # Dosya yükleme
     col1, col2 = st.columns(2)
     with col1:
-        file_2024 = st.file_uploader("📁 2024 Kasım", type=['xlsx'], key='f2024')
+        file_2024 = st.file_uploader("📁 2024 Kasım Verisi", type=['xlsx'], key='file_2024')
     with col2:
-        file_2025 = st.file_uploader("📁 2025 Kasım", type=['xlsx'], key='f2025')
+        file_2025 = st.file_uploader("📁 2025 Kasım Verisi", type=['xlsx'], key='file_2025')
     
     if not file_2024 or not file_2025:
-        st.info("👆 Her iki dosyayı da yükleyin")
+        st.info("👆 Her iki Excel dosyasını da yükleyin")
         
         st.markdown("""
-        ### ℹ️ Bu Dashboard Ne Yapar?
+        ### 🎯 Bu Sistem Ne Yapar?
         
-        **Sadece şu nitelikleri analiz eder:**
-        - Spot
-        - Grup Spot
-        - Regule
-        - Kasa Aktivitesi
-        - Bölgesel
+        **Veri göstermez, KARAR üretir.**
         
-        **Gösterir:**
-        - 📦 **Satış Miktarı** ana metrik
-        - 🔴 **En Kötü 10 Mal Grubu** (adet düşüşüne göre)
-        - 🟢 **En İyi 10 Mal Grubu** (adet artışına göre)
-        - 📋 **Ürün detayları** (her mal grubunun ürünleri)
-        - 📥 **Excel rapor** (seçilen filtreye göre)
+        **5 Soruya Cevap:**
+        1. Çok satan & pay kazanan kim?
+        2. Az satan ama pay kazanan kim?
+        3. Çok satan ama pay kaybeden kim?
+        4. Marjı bozanlar kim?
+        5. Düşüşün muhtemel NEDENİ ne?
+        
+        **Otomatik Teşhis:**
+        - 🏷️ Kampanya kaynaklı mı?
+        - 🔥 Fire problemi mi?
+        - 📦 Bulunurluk/yerleşim mi?
+        - 💰 Fiyatlama mı?
+        
+        **Analiz Edilecek Nitelikler:**
+        Spot, Grup Spot, Regule, Kasa Aktivitesi, Bölgesel
         """)
         return
     
     # Veri yükle
-    cache_key = f"{file_2024.name}_{file_2025.name}_{file_2024.size}"
-    data = load_data(file_2024.getvalue(), file_2025.getvalue(), cache_key)
+    cache_key = f"{file_2024.name}_{file_2025.name}_{file_2024.size}_{file_2025.size}"
+    
+    try:
+        veri = veri_yukle(file_2024.getvalue(), file_2025.getvalue(), cache_key)
+    except Exception as e:
+        st.error(f"Veri yüklenirken hata: {str(e)}")
+        return
     
     # Sidebar filtreleri
-    filters = render_sidebar(data['filters'])
-    filter_desc = get_filter_description(filters)
-    where_clause = build_where_clause(filters)
+    secili = sidebar_filtreler(veri['filtreler'])
+    filtre_text = filtre_aciklamasi(secili)
+    where_clause = build_where(secili)
     
-    # DuckDB bağlantısı - DataFrame'den direkt
-    con = duckdb.connect()
-    con.register('veri', data['df'])
+    # DuckDB bağlantısı
+    con = get_duckdb_connection(veri['path_2024'], veri['path_2025'])
     
     # Filtre bilgisi
-    st.markdown(f'<div class="filter-info">📍 <strong>Filtre:</strong> {filter_desc}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="filter-badge">📍 <strong>Filtre:</strong> {filtre_text} | <strong>Min Ciro:</strong> ₺{secili["min_ciro"]:,}</div>', unsafe_allow_html=True)
     
     # Excel rapor butonu
-    excel = create_excel_report(con, where_clause, filter_desc)
+    excel = excel_rapor_olustur(con, where_clause, secili['min_ciro'], filtre_text)
     st.download_button(
         "📥 EXCEL RAPORU İNDİR",
         excel,
-        f"performans_raporu_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        f"karar_raporu_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     
     st.markdown("---")
     
     # KPI'lar
-    summary = get_summary(con, where_clause)
-    render_kpis(summary)
+    ozet = get_ozet_kpiler(con, where_clause)
+    kpi_goster(ozet)
     
     st.markdown("---")
     
-    # En kötü / en iyi
-    render_worst_best(con, where_clause)
+    # Mal Grubu Analizi
+    df_analiz = get_mal_grubu_analiz(con, where_clause, secili['min_ciro'])
+    
+    # İki sütun: En Kötü / En İyi
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        karar_kartlari_goster(df_analiz, "🔴 EN KÖTÜ 10 (Adet Düşüşü)", limit=10, ters=False)
+    
+    with col2:
+        karar_kartlari_goster(df_analiz, "🟢 EN İYİ 10 (Adet Artışı)", limit=10, ters=True)
+    
+    # Ürün detay gösterimi
+    selected_mal = st.session_state.get('selected_mal_grubu')
+    if selected_mal:
+        st.markdown("---")
+        st.markdown(f'<div class="section-title">📋 {selected_mal} - Ürün Detayları</div>', unsafe_allow_html=True)
+        
+        df_urunler = get_urun_detay(con, selected_mal, where_clause)
+        
+        if not df_urunler.empty:
+            st.dataframe(
+                df_urunler,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Adet_Deg': st.column_config.NumberColumn('Adet %', format='%.1f%%'),
+                    'Ciro_2024': st.column_config.NumberColumn('Ciro 2024', format='₺%.0f'),
+                    'Ciro_2025': st.column_config.NumberColumn('Ciro 2025', format='₺%.0f'),
+                }
+            )
+        
+        if st.button("❌ Kapat"):
+            st.session_state['selected_mal_grubu'] = None
+            st.rerun()
     
     # Footer
     st.markdown("---")
-    st.caption(f"Kayıt: 2024={data['counts']['2024']:,} | 2025={data['counts']['2025']:,} | Min. Baz: {MIN_BASE_ADET} adet")
+    st.caption(f"📊 Kayıt: 2024={veri['sayilar']['2024']:,} | 2025={veri['sayilar']['2025']:,}")
     
     con.close()
 

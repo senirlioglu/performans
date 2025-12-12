@@ -11,8 +11,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import duckdb
-import tempfile
-from pathlib import Path
 from io import BytesIO
 import warnings
 import gc
@@ -87,16 +85,8 @@ st.markdown("""
 # VERİ YÜKLEME
 # ============================================================================
 
-def get_temp_dir():
-    temp_dir = Path(tempfile.gettempdir()) / "perf_v4"
-    temp_dir.mkdir(exist_ok=True)
-    return temp_dir
-
-
-def excel_to_parquet(file_bytes, year, temp_dir):
-    """Excel → Parquet dönüşümü"""
-    
-    parquet_path = temp_dir / f"data_{year}.parquet"
+def load_excel_to_df(file_bytes, year):
+    """Excel'i DataFrame'e yükle ve temizle"""
     
     df = pd.read_excel(
         BytesIO(file_bytes),
@@ -120,39 +110,35 @@ def excel_to_parquet(file_bytes, year, temp_dir):
                 'Üst Mal Grubu - Orta uzunl.metin', 'Mal Grubu - Orta uzunl.metin',
                 'Malzeme Kodu', 'Malzeme Tanımı']:
         if col in df.columns:
-            df[col] = df[col].astype(str).replace('nan', '').replace('None', '')
+            df[col] = df[col].astype(str).str.strip()
+            df[col] = df[col].replace(['nan', 'None', 'NaN', ''], '')
     
-    df.to_parquet(parquet_path, engine='pyarrow', compression='snappy', index=False)
-    
-    row_count = len(df)
-    del df
-    gc.collect()
-    
-    return parquet_path, row_count
+    return df
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(_bytes_2024, _bytes_2025, cache_key):
     """Veriyi yükle ve DuckDB'ye hazırla"""
     
-    temp_dir = get_temp_dir()
-    
     progress = st.progress(0, text="2024 verisi yükleniyor...")
-    p2024, count_2024 = excel_to_parquet(_bytes_2024, 2024, temp_dir)
+    df_2024 = load_excel_to_df(_bytes_2024, 2024)
+    count_2024 = len(df_2024)
     
     progress.progress(40, text="2025 verisi yükleniyor...")
-    p2025, count_2025 = excel_to_parquet(_bytes_2025, 2025, temp_dir)
+    df_2025 = load_excel_to_df(_bytes_2025, 2025)
+    count_2025 = len(df_2025)
+    
+    progress.progress(60, text="Veriler birleştiriliyor...")
+    df_all = pd.concat([df_2024, df_2025], ignore_index=True)
+    
+    del df_2024, df_2025
+    gc.collect()
     
     progress.progress(70, text="Filtre seçenekleri hazırlanıyor...")
     
-    # DuckDB bağlantısı
+    # DuckDB bağlantısı - DataFrame'den direkt oku
     con = duckdb.connect()
-    con.execute(f"""
-        CREATE OR REPLACE VIEW veri AS
-        SELECT * FROM read_parquet('{p2024}')
-        UNION ALL
-        SELECT * FROM read_parquet('{p2025}')
-    """)
+    con.register('veri', df_all)
     
     # Filtre seçenekleri
     filters = {
@@ -192,8 +178,7 @@ def load_data(_bytes_2024, _bytes_2025, cache_key):
     progress.empty()
     
     return {
-        'parquet_2024': str(p2024),
-        'parquet_2025': str(p2025),
+        'df': df_all,
         'filters': filters,
         'counts': {'2024': count_2024, '2025': count_2025}
     }
@@ -712,14 +697,9 @@ def main():
     filter_desc = get_filter_description(filters)
     where_clause = build_where_clause(filters)
     
-    # DuckDB bağlantısı
+    # DuckDB bağlantısı - DataFrame'den direkt
     con = duckdb.connect()
-    con.execute(f"""
-        CREATE OR REPLACE VIEW veri AS
-        SELECT * FROM read_parquet('{data["parquet_2024"]}')
-        UNION ALL
-        SELECT * FROM read_parquet('{data["parquet_2025"]}')
-    """)
+    con.register('veri', data['df'])
     
     # Filtre bilgisi
     st.markdown(f'<div class="filter-info">📍 <strong>Filtre:</strong> {filter_desc}</div>', unsafe_allow_html=True)

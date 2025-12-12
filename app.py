@@ -525,9 +525,12 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
     
     df_sorted = df.nlargest(limit, 'adet_deg') if ters else df.nsmallest(limit, 'adet_deg')
     
+    # Benzersiz prefix oluştur
+    prefix = "iyi" if ters else "kotu"
+    
     selected = None
     
-    for idx, row in df_sorted.iterrows():
+    for i, (idx, row) in enumerate(df_sorted.iterrows()):
         mal = row['mal_grubu']
         adet_deg = row.get('adet_deg', 0)
         neden, aksiyon, renk = neden_tespit(row)
@@ -544,7 +547,7 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
             st.markdown(f'<div class="neden-box"><strong>Neden:</strong> {neden}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="aksiyon-box">💡 <strong>Aksiyon:</strong> {aksiyon}</div>', unsafe_allow_html=True)
             
-            if st.button("📋 Ürünleri Göster", key=f"btn_{idx}_{mal}"):
+            if st.button("📋 Ürünleri Göster", key=f"btn_{prefix}_{i}"):
                 selected = mal
     
     return selected

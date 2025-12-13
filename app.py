@@ -338,6 +338,257 @@ def excel_rapor(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:
 
 
 # ============================================================================
+# MARJ ANALİZİ FONKSİYONLARI (YENİ)
+# ============================================================================
+
+def get_marj_mal_grubu(con, where: str, min_ciro: float) -> pd.DataFrame:
+    """Mal Grubu bazında marj analizi"""
+    
+    ciro_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) >= {min_ciro}" if min_ciro > 0 else ""
+    
+    if where:
+        where_mal = f"{where} AND Mal_Grubu != ''"
+    else:
+        where_mal = "WHERE Mal_Grubu != ''"
+    
+    sql = f"""
+        SELECT 
+            Mal_Grubu,
+            MAX(Ust_Mal) as Ust_Mal,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025
+        FROM veri
+        {where_mal}
+        GROUP BY Mal_Grubu
+        {ciro_filtre}
+    """
+    
+    df = con.execute(sql).fetchdf()
+    
+    if df.empty:
+        return df
+    
+    df.columns = [c.lower() for c in df.columns]
+    
+    # Marj farkı (tutar olarak)
+    df['marj_fark'] = df['marj_2025'] - df['marj_2024']
+    
+    # Marj değişim %
+    df['marj_deg'] = df.apply(lambda r: ((r['marj_2025']/r['marj_2024'])-1)*100 if r['marj_2024']>0 else 0, axis=1)
+    
+    # Marj oranı
+    df['marj_oran_2024'] = df.apply(lambda r: (r['marj_2024']/r['ciro_2024'])*100 if r['ciro_2024']>0 else 0, axis=1)
+    df['marj_oran_2025'] = df.apply(lambda r: (r['marj_2025']/r['ciro_2025'])*100 if r['ciro_2025']>0 else 0, axis=1)
+    df['marj_oran_fark'] = df['marj_oran_2025'] - df['marj_oran_2024']
+    
+    return df
+
+
+def get_marj_malzeme(con, where: str, min_ciro: float) -> pd.DataFrame:
+    """Malzeme bazında marj analizi"""
+    
+    ciro_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) >= {min_ciro/10}" if min_ciro > 0 else ""
+    
+    if where:
+        where_mal = f"{where} AND Urun_Kod != ''"
+    else:
+        where_mal = "WHERE Urun_Kod != ''"
+    
+    sql = f"""
+        SELECT 
+            Urun_Kod,
+            MAX(Urun_Ad) as Urun_Ad,
+            MAX(Mal_Grubu) as Mal_Grubu,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025
+        FROM veri
+        {where_mal}
+        GROUP BY Urun_Kod
+        {ciro_filtre}
+    """
+    
+    df = con.execute(sql).fetchdf()
+    
+    if df.empty:
+        return df
+    
+    df.columns = [c.lower() for c in df.columns]
+    
+    # Marj farkı (tutar olarak)
+    df['marj_fark'] = df['marj_2025'] - df['marj_2024']
+    
+    # Marj değişim %
+    df['marj_deg'] = df.apply(lambda r: ((r['marj_2025']/r['marj_2024'])-1)*100 if r['marj_2024']>0 else 0, axis=1)
+    
+    # Marj oranı
+    df['marj_oran_2024'] = df.apply(lambda r: (r['marj_2024']/r['ciro_2024'])*100 if r['ciro_2024']>0 else 0, axis=1)
+    df['marj_oran_2025'] = df.apply(lambda r: (r['marj_2025']/r['ciro_2025'])*100 if r['ciro_2025']>0 else 0, axis=1)
+    
+    return df
+
+
+def marj_kpi_goster(con, where: str):
+    """Marj KPI kartları"""
+    
+    sql = f"""
+        SELECT 
+            Yil,
+            SUM(Marj) as Marj,
+            SUM(Ciro) as Ciro
+        FROM veri
+        {where}
+        GROUP BY Yil
+    """
+    
+    df = con.execute(sql).fetchdf()
+    df.columns = df.columns.str.lower()
+    
+    marj_2024 = df[df['yil']==2024]['marj'].sum() if len(df[df['yil']==2024]) > 0 else 0
+    marj_2025 = df[df['yil']==2025]['marj'].sum() if len(df[df['yil']==2025]) > 0 else 0
+    ciro_2024 = df[df['yil']==2024]['ciro'].sum() if len(df[df['yil']==2024]) > 0 else 0
+    ciro_2025 = df[df['yil']==2025]['ciro'].sum() if len(df[df['yil']==2025]) > 0 else 0
+    
+    marj_fark = marj_2025 - marj_2024
+    marj_deg = ((marj_2025/marj_2024)-1)*100 if marj_2024 > 0 else 0
+    
+    marj_oran_2024 = (marj_2024/ciro_2024)*100 if ciro_2024 > 0 else 0
+    marj_oran_2025 = (marj_2025/ciro_2025)*100 if ciro_2025 > 0 else 0
+    oran_fark = marj_oran_2025 - marj_oran_2024
+    
+    cols = st.columns(4)
+    
+    with cols[0]:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">💰 Marj 2024</div>
+            <div class="kpi-value">₺{marj_2024:,.0f}</div>
+            <div class="kpi-delta">%{marj_oran_2024:.1f} oran</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with cols[1]:
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">💰 Marj 2025</div>
+            <div class="kpi-value">₺{marj_2025:,.0f}</div>
+            <div class="kpi-delta">%{marj_oran_2025:.1f} oran</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with cols[2]:
+        delta_class = 'delta-up' if marj_fark > 0 else 'delta-down'
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">📊 Marj Farkı</div>
+            <div class="kpi-value {delta_class}">₺{marj_fark:+,.0f}</div>
+            <div class="kpi-delta {delta_class}">{marj_deg:+.1f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with cols[3]:
+        delta_class = 'delta-up' if oran_fark > 0 else 'delta-down'
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-label">📈 Oran Değişimi</div>
+            <div class="kpi-value {delta_class}">{oran_fark:+.2f}%</div>
+            <div class="kpi-delta">{marj_oran_2024:.1f}% → {marj_oran_2025:.1f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def marj_liste_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = False, prefix: str = ""):
+    """Mal grubu marj listesi"""
+    
+    st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
+    
+    if df.empty:
+        st.info("Gösterilecek veri yok")
+        return
+    
+    df_sorted = df.nlargest(limit, 'marj_fark') if ters else df.nsmallest(limit, 'marj_fark')
+    
+    for i, (idx, row) in enumerate(df_sorted.iterrows()):
+        mal = row['mal_grubu']
+        marj_fark = row.get('marj_fark', 0)
+        marj_deg = row.get('marj_deg', 0)
+        
+        renk = "🟢" if marj_fark > 0 else "🔴"
+        
+        with st.expander(f"{renk} **{mal}** → ₺{marj_fark:+,.0f}"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Marj 2024", f"₺{row['marj_2024']:,.0f}")
+                st.metric("Marj Oranı 2024", f"%{row['marj_oran_2024']:.1f}")
+            with col2:
+                st.metric("Marj 2025", f"₺{row['marj_2025']:,.0f}", f"{marj_deg:+.1f}%")
+                st.metric("Marj Oranı 2025", f"%{row['marj_oran_2025']:.1f}", f"{row['marj_oran_fark']:+.2f}%")
+
+
+def marj_malzeme_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = False, prefix: str = ""):
+    """Malzeme marj listesi"""
+    
+    st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
+    
+    if df.empty:
+        st.info("Gösterilecek veri yok")
+        return
+    
+    df_sorted = df.nlargest(limit, 'marj_fark') if ters else df.nsmallest(limit, 'marj_fark')
+    
+    for i, (idx, row) in enumerate(df_sorted.iterrows()):
+        urun = row['urun_ad'][:50] + "..." if len(str(row['urun_ad'])) > 50 else row['urun_ad']
+        marj_fark = row.get('marj_fark', 0)
+        marj_deg = row.get('marj_deg', 0)
+        
+        renk = "🟢" if marj_fark > 0 else "🔴"
+        
+        with st.expander(f"{renk} **{urun}** → ₺{marj_fark:+,.0f}"):
+            st.caption(f"Kod: {row['urun_kod']} | Mal Grubu: {row['mal_grubu']}")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Marj 2024", f"₺{row['marj_2024']:,.0f}")
+                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+            with col2:
+                st.metric("Marj 2025", f"₺{row['marj_2025']:,.0f}", f"{marj_deg:+.1f}%")
+                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}")
+
+
+def excel_rapor_marj(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:
+    """Marj Excel raporu"""
+    
+    output = BytesIO()
+    
+    df_mal = get_marj_mal_grubu(con, where, min_ciro)
+    df_urun = get_marj_malzeme(con, where, min_ciro)
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        pd.DataFrame([{
+            'Filtre': filtre_text,
+            'Min Ciro': f"₺{min_ciro:,.0f}",
+            'Tarih': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'),
+            'Rapor': 'Net Marj Analizi'
+        }]).to_excel(writer, sheet_name='Bilgi', index=False)
+        
+        if not df_mal.empty:
+            df_mal.nsmallest(20, 'marj_fark').to_excel(writer, sheet_name='Mal Grubu - Kayıp', index=False)
+            df_mal.nlargest(20, 'marj_fark').to_excel(writer, sheet_name='Mal Grubu - Kazanç', index=False)
+            df_mal.to_excel(writer, sheet_name='Mal Grubu - Tümü', index=False)
+        
+        if not df_urun.empty:
+            df_urun.nsmallest(20, 'marj_fark').to_excel(writer, sheet_name='Malzeme - Kayıp', index=False)
+            df_urun.nlargest(20, 'marj_fark').to_excel(writer, sheet_name='Malzeme - Kazanç', index=False)
+    
+    output.seek(0)
+    return output
+
+
+# ============================================================================
 # UI
 # ============================================================================
 
@@ -528,38 +779,89 @@ def main():
     # Filtre bilgisi
     st.markdown(f'<div class="filter-badge">📍 {filtre} | Min: ₺{secili["min_ciro"]:,}</div>', unsafe_allow_html=True)
     
-    # Excel rapor
-    excel = excel_rapor(con, where, secili['min_ciro'], filtre)
-    st.download_button("📥 EXCEL RAPORU", excel, f"rapor_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx")
+    # SEKMELER
+    tab1, tab2 = st.tabs(["📦 Satış Analizi", "💰 Net Marj Analizi"])
     
-    st.markdown("---")
-    
-    # KPI'lar
-    ozet = get_ozet(con, where)
-    kpi_goster(ozet)
-    
-    st.markdown("---")
-    
-    # Analiz
-    df_analiz = get_mal_grubu_analiz(con, where, secili['min_ciro'])
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        selected1 = karar_goster(df_analiz, "🔴 EN KÖTÜ 10", limit=10, ters=False)
-    
-    with col2:
-        selected2 = karar_goster(df_analiz, "🟢 EN İYİ 10", limit=10, ters=True)
-    
-    # Ürün detay
-    selected = selected1 or selected2
-    if selected:
+    # =========================================================================
+    # TAB 1: SATIŞ ANALİZİ (mevcut)
+    # =========================================================================
+    with tab1:
+        # Excel rapor
+        excel = excel_rapor(con, where, secili['min_ciro'], filtre)
+        st.download_button("📥 EXCEL RAPORU", excel, f"rapor_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_satis")
+        
         st.markdown("---")
-        st.markdown(f"### 📋 {selected} - Ürün Detayları")
-        df_urun = get_urun_detay(con, selected, where)
-        if not df_urun.empty:
-            st.dataframe(df_urun, use_container_width=True, hide_index=True)
+        
+        # KPI'lar
+        ozet = get_ozet(con, where)
+        kpi_goster(ozet)
+        
+        st.markdown("---")
+        
+        # Analiz
+        df_analiz = get_mal_grubu_analiz(con, where, secili['min_ciro'])
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            selected1 = karar_goster(df_analiz, "🔴 EN KÖTÜ 10", limit=10, ters=False)
+        
+        with col2:
+            selected2 = karar_goster(df_analiz, "🟢 EN İYİ 10", limit=10, ters=True)
+        
+        # Ürün detay
+        selected = selected1 or selected2
+        if selected:
+            st.markdown("---")
+            st.markdown(f"### 📋 {selected} - Ürün Detayları")
+            df_urun = get_urun_detay(con, selected, where)
+            if not df_urun.empty:
+                st.dataframe(df_urun, use_container_width=True, hide_index=True)
     
+    # =========================================================================
+    # TAB 2: NET MARJ ANALİZİ (yeni)
+    # =========================================================================
+    with tab2:
+        # Excel rapor - Marj
+        excel_marj = excel_rapor_marj(con, where, secili['min_ciro'], filtre)
+        st.download_button("📥 MARJ RAPORU", excel_marj, f"marj_rapor_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_marj")
+        
+        st.markdown("---")
+        
+        # Marj KPI'lar
+        marj_kpi_goster(con, where)
+        
+        st.markdown("---")
+        
+        # Mal Grubu bazında marj analizi
+        st.markdown('<div class="section-title">📊 MAL GRUBU BAZINDA MARJ ANALİZİ</div>', unsafe_allow_html=True)
+        
+        df_marj_mal = get_marj_mal_grubu(con, where, secili['min_ciro'])
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            marj_liste_goster(df_marj_mal, "🔴 EN ÇOK MARJ KAYBI (Mal Grubu)", limit=10, ters=False, prefix="mal_kotu")
+        
+        with col2:
+            marj_liste_goster(df_marj_mal, "🟢 EN ÇOK MARJ ARTIŞI (Mal Grubu)", limit=10, ters=True, prefix="mal_iyi")
+        
+        st.markdown("---")
+        
+        # Malzeme bazında marj analizi
+        st.markdown('<div class="section-title">📦 MALZEME BAZINDA MARJ ANALİZİ</div>', unsafe_allow_html=True)
+        
+        df_marj_urun = get_marj_malzeme(con, where, secili['min_ciro'])
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            marj_malzeme_goster(df_marj_urun, "🔴 EN ÇOK MARJ KAYBI (Malzeme)", limit=10, ters=False, prefix="urun_kotu")
+        
+        with col2:
+            marj_malzeme_goster(df_marj_urun, "🟢 EN ÇOK MARJ ARTIŞI (Malzeme)", limit=10, ters=True, prefix="urun_iyi")
+    
+    # Footer
     st.markdown("---")
     st.caption(f"📊 2024: {veri['sayilar']['2024']:,} | 2025: {veri['sayilar']['2025']:,} | ⚡ Parquet ile süper hızlı")
     

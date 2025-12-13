@@ -41,42 +41,50 @@ NUMERIK_KOLONLAR = ['Adet', 'Ciro', 'Marj', 'Fire', 'Envanter', 'Kampanya_Zarar'
 # ============================================================================
 st.markdown("""
 <style>
-    .main-title {font-size: 2rem; font-weight: 700; color: #1e293b; margin-bottom: 0;}
-    .sub-title {font-size: 1rem; color: #64748b; margin-bottom: 1.5rem;}
+    /* Genel padding azaltma */
+    .block-container {padding-top: 1rem !important; padding-bottom: 0 !important;}
+    
+    .main-title {font-size: 1.3rem; font-weight: 700; color: #1e293b; margin-bottom: 0; margin-top: 0;}
+    .sub-title {font-size: 0.85rem; color: #64748b; margin-bottom: 0.5rem;}
     
     .kpi-card {
-        background: white; border: 1px solid #e2e8f0; border-radius: 12px;
-        padding: 1.25rem; text-align: center;
+        background: white; border: 1px solid #e2e8f0; border-radius: 8px;
+        padding: 0.75rem; text-align: center;
     }
-    .kpi-label {font-size: 0.8rem; color: #64748b; text-transform: uppercase;}
-    .kpi-value {font-size: 1.75rem; font-weight: 700; color: #1e293b; margin: 0.25rem 0;}
-    .kpi-delta {font-size: 0.9rem; font-weight: 600;}
+    .kpi-label {font-size: 0.7rem; color: #64748b; text-transform: uppercase;}
+    .kpi-value {font-size: 1.4rem; font-weight: 700; color: #1e293b; margin: 0.15rem 0;}
+    .kpi-delta {font-size: 0.8rem; font-weight: 600;}
     .delta-up {color: #10b981;}
     .delta-down {color: #ef4444;}
     
     .section-title {
-        font-size: 1.1rem; font-weight: 600; color: #334155;
-        padding-bottom: 0.5rem; border-bottom: 2px solid #e2e8f0;
-        margin: 1.5rem 0 1rem 0;
+        font-size: 1rem; font-weight: 600; color: #334155;
+        padding-bottom: 0.3rem; border-bottom: 2px solid #e2e8f0;
+        margin: 0.75rem 0 0.5rem 0;
     }
     
     .filter-badge {
-        display: inline-block; background: #f1f5f9; padding: 0.5rem 1rem;
-        border-radius: 8px; font-size: 0.85rem; color: #475569; margin-bottom: 1rem;
+        display: inline-block; background: #f1f5f9; padding: 0.3rem 0.75rem;
+        border-radius: 6px; font-size: 0.8rem; color: #475569; margin-bottom: 0.5rem;
     }
     
     .neden-box {
-        background: #fef3c7; padding: 0.5rem; border-radius: 6px;
-        font-size: 0.85rem; margin-top: 0.5rem;
+        background: #fef3c7; padding: 0.4rem; border-radius: 6px;
+        font-size: 0.8rem; margin-top: 0.4rem;
     }
     .aksiyon-box {
-        color: #0369a1; font-size: 0.85rem; margin-top: 0.5rem;
+        color: #0369a1; font-size: 0.8rem; margin-top: 0.4rem;
     }
     
     .success-box {
-        background: #d1fae5; border: 1px solid #10b981; border-radius: 8px;
-        padding: 1rem; margin: 1rem 0;
+        background: #d1fae5; border: 1px solid #10b981; border-radius: 6px;
+        padding: 0.5rem; margin: 0.5rem 0; font-size: 0.85rem;
     }
+    
+    /* Streamlit varsayılanlarını sıkıştır */
+    .stTabs [data-baseweb="tab-list"] {gap: 8px;}
+    .stTabs [data-baseweb="tab"] {padding: 8px 16px; font-size: 0.9rem;}
+    div[data-testid="stExpander"] {margin-bottom: 0.3rem;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -942,26 +950,17 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
             st.markdown(f'<div class="neden-box"><strong>Neden:</strong> {neden}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="aksiyon-box">💡 <strong>Aksiyon:</strong> {aksiyon}</div>', unsafe_allow_html=True)
             
-            # Butonlar - En İyi için 3 buton, En Kötü için 2 buton
-            if ters:  # En İyi 10
-                btn_col1, btn_col2, btn_col3 = st.columns(3)
-                with btn_col1:
-                    if st.button("📋 Ürünler", key=f"btn_urun_{prefix}_{i}"):
-                        selected_urun = mal
-                with btn_col2:
-                    if st.button("🟢 Yükselen", key=f"btn_artis_{prefix}_{i}"):
-                        selected_mag_artis = mal
-                with btn_col3:
-                    if st.button("🔴 Düşen", key=f"btn_dusus_{prefix}_{i}"):
-                        selected_mag_dusus = mal
-            else:  # En Kötü 10
-                btn_col1, btn_col2 = st.columns(2)
-                with btn_col1:
-                    if st.button("📋 Ürünleri Göster", key=f"btn_urun_{prefix}_{i}"):
-                        selected_urun = mal
-                with btn_col2:
-                    if st.button("🏪 Düşen Mağazalar", key=f"btn_dusus_{prefix}_{i}"):
-                        selected_mag_dusus = mal
+            # Her iki liste için de 3 buton
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
+            with btn_col1:
+                if st.button("📋 Ürünler", key=f"btn_urun_{prefix}_{i}"):
+                    selected_urun = mal
+            with btn_col2:
+                if st.button("🟢 Yükselen", key=f"btn_artis_{prefix}_{i}"):
+                    selected_mag_artis = mal
+            with btn_col3:
+                if st.button("🔴 Düşen", key=f"btn_dusus_{prefix}_{i}"):
+                    selected_mag_dusus = mal
     
     return selected_urun, selected_mag_dusus, selected_mag_artis
 
@@ -1034,7 +1033,7 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            selected_urun1, selected_mag_dusus1, _ = karar_goster(df_analiz, "🔴 EN KÖTÜ 10", limit=10, ters=False)
+            selected_urun1, selected_mag_dusus1, selected_mag_artis1 = karar_goster(df_analiz, "🔴 EN KÖTÜ 10", limit=10, ters=False)
         
         with col2:
             selected_urun2, selected_mag_dusus2, selected_mag_artis2 = karar_goster(df_analiz, "🟢 EN İYİ 10", limit=10, ters=True)
@@ -1073,11 +1072,12 @@ def main():
             else:
                 st.info("Bu mal grubu için mağaza verisi bulunamadı")
         
-        # Yükselen mağazalar
-        if selected_mag_artis2:
+        # Yükselen mağazalar - her iki listeden de
+        selected_mag_artis = selected_mag_artis1 or selected_mag_artis2
+        if selected_mag_artis:
             st.markdown("---")
-            st.markdown(f"### 🟢 {selected_mag_artis2} - En Çok Yükselen 5 Mağaza")
-            df_mag_artis = get_magaza_artis(con, selected_mag_artis2, where, limit=5)
+            st.markdown(f"### 🟢 {selected_mag_artis} - En Çok Yükselen 5 Mağaza")
+            df_mag_artis = get_magaza_artis(con, selected_mag_artis, where, limit=5)
             if not df_mag_artis.empty:
                 for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
                     mag_ad = row['magaza_ad']

@@ -1,20 +1,17 @@
 """
-🎯 SATIŞ KARAR SİSTEMİ v5.1
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-Bu bir dashboard değil, KARAR sistemi.
-3 dakikada teşhis, neden, aksiyon.
+🎯 SATIŞ KARAR SİSTEMİ v6
+━━━━━━━━━━━━━━━━━━━━━━━━
+Parquet'ten okur - Süper Hızlı
+Dosya yükleme YOK - Direkt açılır
 
-Mimari: Excel → DataFrame → DuckDB → Karar
-(Parquet kaldırıldı - Cloud uyumluluğu için)
+Güncelleme: Ayda 1 kez parquet dosyalarını değiştir
 """
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 import duckdb
 from io import BytesIO
 import warnings
-import gc
 
 warnings.filterwarnings('ignore')
 
@@ -32,26 +29,10 @@ st.set_page_config(
 # SABİTLER
 # ============================================================================
 
-GECERLI_NITELIKLER = ['Spot', 'Grup Spot', 'Regule', 'Kasa Aktivitesi', 'Bölgesel']
-
-KOLON_MAP = {
-    'SM': 'SM',
-    'BS': 'BS',
-    'Mağaza - Anahtar': 'Magaza_Kod',
-    'Mağaza - Orta uzunl.metin': 'Magaza_Ad',
-    'Malzeme Nitelik - Metin': 'Nitelik',
-    'Ürün Grubu - Orta uzunl.metin': 'Urun_Grubu',
-    'Üst Mal Grubu - Orta uzunl.metin': 'Ust_Mal',
-    'Mal Grubu - Orta uzunl.metin': 'Mal_Grubu',
-    'Malzeme Kodu': 'Urun_Kod',
-    'Malzeme Tanımı': 'Urun_Ad',
-    'Satış Miktarı': 'Adet',
-    'Satış Hasılatı (VD)': 'Ciro',
-    'Net Marj': 'Marj',
-    'Fire Tutarı': 'Fire',
-    'Envanter Tutarı': 'Envanter',
-    'Toplam Kampanya Zararı': 'Kampanya_Zarar'
-}
+# GitHub'daki parquet dosyaları (raw URL)
+# Bu URL'leri kendi repo'na göre güncelle!
+PARQUET_2024 = "veri_2024.parquet"
+PARQUET_2025 = "veri_2025.parquet"
 
 NUMERIK_KOLONLAR = ['Adet', 'Ciro', 'Marj', 'Fire', 'Envanter', 'Kampanya_Zarar']
 
@@ -91,111 +72,73 @@ st.markdown("""
     .aksiyon-box {
         color: #0369a1; font-size: 0.85rem; margin-top: 0.5rem;
     }
+    
+    .success-box {
+        background: #d1fae5; border: 1px solid #10b981; border-radius: 8px;
+        padding: 1rem; margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ============================================================================
-# VERİ OKUMA
+# VERİ OKUMA (PARQUET - SÜPER HIZLI)
 # ============================================================================
 
-def excel_oku(file_bytes: bytes, yil: int) -> pd.DataFrame:
-    """Excel'i oku ve temizle - SADECE gerekli kolonlar"""
-    
-    # Önce kolon isimlerini al
-    df_cols = pd.read_excel(BytesIO(file_bytes), engine='openpyxl', nrows=0)
-    df_cols.columns = df_cols.columns.str.strip()
-    
-    # Sadece var olan ve gerekli kolonları seç
-    gerekli = list(KOLON_MAP.keys())
-    mevcut = [c for c in gerekli if c in df_cols.columns]
-    
-    # Sadece gerekli kolonları oku
-    df = pd.read_excel(
-        BytesIO(file_bytes), 
-        engine='openpyxl',
-        usecols=mevcut
-    )
-    df.columns = df.columns.str.strip()
-    
-    # Kolon isimlerini kısalt
-    df = df.rename(columns=KOLON_MAP)
-    df['Yil'] = yil
-    
-    # Nitelik filtresi
-    if 'Nitelik' in df.columns:
-        df = df[df['Nitelik'].isin(GECERLI_NITELIKLER)]
-    
-    # Numerik kolonlar - float32 ile bellek tasarrufu
-    for col in NUMERIK_KOLONLAR:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('float32')
-    
-    # String kolonlar - temizle
-    str_cols = ['SM', 'BS', 'Magaza_Kod', 'Magaza_Ad', 'Nitelik', 
-                'Urun_Grubu', 'Ust_Mal', 'Mal_Grubu', 'Urun_Kod', 'Urun_Ad']
-    for col in str_cols:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
-            df[col] = df[col].replace(['nan', 'None', 'NaN', '<NA>'], '')
-    
-    # Bellek temizle
-    gc.collect()
-    
-    return df
+@st.cache_resource
+def get_db_connection():
+    """DuckDB bağlantısı - tek sefer oluştur"""
+    return duckdb.connect()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def veri_yukle(_bytes_2024: bytes, _bytes_2025: bytes, cache_key: str) -> dict:
-    """Ana veri yükleme - DataFrame tabanlı"""
+@st.cache_data(ttl=86400)  # 24 saat cache
+def veri_yukle():
+    """Parquet dosyalarını oku - ÇOK HIZLI"""
     
-    progress = st.progress(0, text="📂 2024 verisi okunuyor...")
-    df_2024 = excel_oku(_bytes_2024, 2024)
-    
-    progress.progress(40, text="📂 2025 verisi okunuyor...")
-    df_2025 = excel_oku(_bytes_2025, 2025)
-    
-    progress.progress(70, text="🔧 Veriler birleştiriliyor...")
-    df_all = pd.concat([df_2024, df_2025], ignore_index=True)
-    
-    # Filtre seçenekleri
-    filtreler = {
-        'sm': sorted(df_all[df_all['SM'] != '']['SM'].unique().tolist()),
-        'nitelik': sorted(df_all[df_all['Nitelik'] != '']['Nitelik'].unique().tolist()),
-        'urun_grubu': sorted(df_all[df_all['Urun_Grubu'] != '']['Urun_Grubu'].unique().tolist()),
-    }
-    
-    # BS by SM
-    bs_df = df_all[df_all['BS'] != ''][['SM', 'BS']].drop_duplicates()
-    filtreler['bs_map'] = bs_df.groupby('SM')['BS'].apply(list).to_dict()
-    
-    # Mağaza by BS
-    mag_df = df_all[df_all['Magaza_Kod'] != ''][['BS', 'Magaza_Kod', 'Magaza_Ad']].drop_duplicates()
-    filtreler['magaza_map'] = mag_df.groupby('BS').apply(
-        lambda x: list(zip(x['Magaza_Kod'], x['Magaza_Ad']))
-    ).to_dict()
-    
-    # Üst Mal by Ürün Grubu
-    ust_df = df_all[df_all['Ust_Mal'] != ''][['Urun_Grubu', 'Ust_Mal']].drop_duplicates()
-    filtreler['ust_mal_map'] = ust_df.groupby('Urun_Grubu')['Ust_Mal'].apply(list).to_dict()
-    
-    # Mal Grubu by Üst Mal
-    mal_df = df_all[df_all['Mal_Grubu'] != ''][['Ust_Mal', 'Mal_Grubu']].drop_duplicates()
-    filtreler['mal_grubu_map'] = mal_df.groupby('Ust_Mal')['Mal_Grubu'].apply(list).to_dict()
-    
-    sayilar = {'2024': len(df_2024), '2025': len(df_2025)}
-    
-    del df_2024, df_2025
-    gc.collect()
-    
-    progress.progress(100, text="✅ Hazır!")
-    progress.empty()
-    
-    return {
-        'df': df_all,
-        'filtreler': filtreler,
-        'sayilar': sayilar
-    }
+    try:
+        df_2024 = pd.read_parquet(PARQUET_2024)
+        df_2025 = pd.read_parquet(PARQUET_2025)
+        
+        df_all = pd.concat([df_2024, df_2025], ignore_index=True)
+        
+        # Filtre seçenekleri
+        filtreler = {
+            'sm': sorted(df_all[df_all['SM'] != '']['SM'].unique().tolist()),
+            'nitelik': sorted(df_all[df_all['Nitelik'] != '']['Nitelik'].unique().tolist()),
+            'urun_grubu': sorted(df_all[df_all['Urun_Grubu'] != '']['Urun_Grubu'].unique().tolist()),
+        }
+        
+        # BS by SM
+        bs_df = df_all[df_all['BS'] != ''][['SM', 'BS']].drop_duplicates()
+        filtreler['bs_map'] = bs_df.groupby('SM')['BS'].apply(list).to_dict()
+        
+        # Mağaza by BS
+        mag_df = df_all[df_all['Magaza_Kod'] != ''][['BS', 'Magaza_Kod', 'Magaza_Ad']].drop_duplicates()
+        filtreler['magaza_map'] = mag_df.groupby('BS').apply(
+            lambda x: list(zip(x['Magaza_Kod'], x['Magaza_Ad']))
+        ).to_dict()
+        
+        # Üst Mal by Ürün Grubu
+        ust_df = df_all[df_all['Ust_Mal'] != ''][['Urun_Grubu', 'Ust_Mal']].drop_duplicates()
+        filtreler['ust_mal_map'] = ust_df.groupby('Urun_Grubu')['Ust_Mal'].apply(list).to_dict()
+        
+        # Mal Grubu by Üst Mal
+        mal_df = df_all[df_all['Mal_Grubu'] != ''][['Ust_Mal', 'Mal_Grubu']].drop_duplicates()
+        filtreler['mal_grubu_map'] = mal_df.groupby('Ust_Mal')['Mal_Grubu'].apply(list).to_dict()
+        
+        sayilar = {'2024': len(df_2024), '2025': len(df_2025)}
+        
+        return {
+            'df': df_all,
+            'filtreler': filtreler,
+            'sayilar': sayilar,
+            'loaded': True
+        }
+        
+    except FileNotFoundError:
+        return {'loaded': False, 'error': 'Parquet dosyaları bulunamadı'}
+    except Exception as e:
+        return {'loaded': False, 'error': str(e)}
 
 
 # ============================================================================
@@ -241,8 +184,6 @@ def get_ozet(con, where: str) -> dict:
     """
     
     df = con.execute(sql).fetchdf()
-    
-    # Kolon isimlerini küçük harfe çevir
     df.columns = df.columns.str.lower()
     
     sonuc = {}
@@ -265,7 +206,6 @@ def get_mal_grubu_analiz(con, where: str, min_ciro: float) -> pd.DataFrame:
     
     ciro_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) >= {min_ciro}" if min_ciro > 0 else ""
     
-    # WHERE clause düzeltmesi
     if where:
         where_mal = f"{where} AND Mal_Grubu != ''"
     else:
@@ -294,10 +234,8 @@ def get_mal_grubu_analiz(con, where: str, min_ciro: float) -> pd.DataFrame:
     if df.empty:
         return df
     
-    # Kolon isimlerini normalize et
     df.columns = [c.lower() for c in df.columns]
     
-    # Değişim hesapla
     df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
     df['ciro_deg'] = df.apply(lambda r: ((r['ciro_2025']/r['ciro_2024'])-1)*100 if r['ciro_2024']>0 else 0, axis=1)
     df['marj_deg'] = df.apply(lambda r: ((r['marj_2025']/r['marj_2024'])-1)*100 if r['marj_2024']>0 else 0, axis=1)
@@ -328,8 +266,6 @@ def get_urun_detay(con, mal_grubu: str, where: str) -> pd.DataFrame:
     """
     
     df = con.execute(sql).fetchdf()
-    
-    # Kolon isimlerini küçük harfe çevir
     df.columns = [c.lower() for c in df.columns]
     
     if not df.empty:
@@ -386,14 +322,12 @@ def excel_rapor(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:
         df['aksiyon'] = df.apply(lambda r: neden_tespit(r)[1], axis=1)
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Bilgi
         pd.DataFrame([{
             'Filtre': filtre_text,
             'Min Ciro': f"₺{min_ciro:,.0f}",
             'Tarih': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')
         }]).to_excel(writer, sheet_name='Bilgi', index=False)
         
-        # En Kötü
         if not df.empty:
             df.nsmallest(20, 'adet_deg').to_excel(writer, sheet_name='En Kötü 20', index=False)
             df.nlargest(20, 'adet_deg').to_excel(writer, sheet_name='En İyi 20', index=False)
@@ -525,9 +459,7 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
     
     df_sorted = df.nlargest(limit, 'adet_deg') if ters else df.nsmallest(limit, 'adet_deg')
     
-    # Benzersiz prefix oluştur
     prefix = "iyi" if ters else "kotu"
-    
     selected = None
     
     for i, (idx, row) in enumerate(df_sorted.iterrows()):
@@ -561,32 +493,28 @@ def main():
     st.markdown('<h1 class="main-title">🎯 Satış Karar Sistemi</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-title">Kasım 2024 → 2025 | 3 dakikada teşhis, neden, aksiyon</p>', unsafe_allow_html=True)
     
-    col1, col2 = st.columns(2)
-    with col1:
-        file_2024 = st.file_uploader("📁 2024 Kasım", type=['xlsx'])
-    with col2:
-        file_2025 = st.file_uploader("📁 2025 Kasım", type=['xlsx'])
+    # Veri yükle (Parquet'ten - çok hızlı)
+    veri = veri_yukle()
     
-    if not file_2024 or not file_2025:
-        st.info("👆 Her iki dosyayı da yükleyin")
+    if not veri.get('loaded'):
+        st.error(f"❌ Veri yüklenemedi: {veri.get('error', 'Bilinmeyen hata')}")
         st.markdown("""
-        ### 🎯 Bu Sistem Ne Yapar?
-        - Veri göstermez, **KARAR** üretir
-        - Otomatik **neden** tespiti
-        - Her sorun için **aksiyon** önerisi
+        ### 📁 Parquet Dosyaları Bulunamadı
         
-        **Analiz:** Spot, Grup Spot, Regule, Kasa Aktivitesi, Bölgesel
+        Bu uygulama `veri_2024.parquet` ve `veri_2025.parquet` dosyalarını okur.
+        
+        **Çözüm:**
+        1. `donusturucu.py` scriptini çalıştır
+        2. Oluşan `.parquet` dosyalarını bu repo'ya yükle
+        3. Sayfayı yenile
         """)
         return
     
-    # Veri yükle
-    cache_key = f"{file_2024.name}_{file_2025.name}_{file_2024.size}"
-    
-    try:
-        veri = veri_yukle(file_2024.getvalue(), file_2025.getvalue(), cache_key)
-    except Exception as e:
-        st.error(f"Hata: {e}")
-        return
+    st.markdown('<div class="success-box">✅ Veri yüklendi: {:,} satır (2024: {:,} | 2025: {:,})</div>'.format(
+        veri['sayilar']['2024'] + veri['sayilar']['2025'],
+        veri['sayilar']['2024'],
+        veri['sayilar']['2025']
+    ), unsafe_allow_html=True)
     
     # Filtreler
     secili = sidebar_filtreler(veri['filtreler'])
@@ -633,7 +561,7 @@ def main():
             st.dataframe(df_urun, use_container_width=True, hide_index=True)
     
     st.markdown("---")
-    st.caption(f"📊 2024: {veri['sayilar']['2024']:,} | 2025: {veri['sayilar']['2025']:,}")
+    st.caption(f"📊 2024: {veri['sayilar']['2024']:,} | 2025: {veri['sayilar']['2025']:,} | ⚡ Parquet ile süper hızlı")
     
     con.close()
 

@@ -315,6 +315,47 @@ def get_magaza_dusus(con, mal_grubu: str, where: str, limit: int = 5) -> pd.Data
     return df
 
 
+def get_magaza_artis(con, mal_grubu: str, where: str, limit: int = 5) -> pd.DataFrame:
+    """Mal grubu için en çok yükselen mağazalar"""
+    
+    mal_kosul = f"Mal_Grubu = '{mal_grubu}'"
+    full_where = f"{where} AND {mal_kosul}" if where else f"WHERE {mal_kosul}"
+    
+    sql = f"""
+        SELECT 
+            Magaza_Kod,
+            MAX(Magaza_Ad) as Magaza_Ad,
+            MAX(BS) as BS,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Fire) ELSE 0 END) as Fire_2025
+        FROM veri
+        {full_where}
+        GROUP BY Magaza_Kod
+        HAVING Adet_2024 > 0 OR Adet_2025 > 0
+    """
+    
+    df = con.execute(sql).fetchdf()
+    df.columns = [c.lower() for c in df.columns]
+    
+    if df.empty:
+        return df
+    
+    # Değişim hesapla
+    df['adet_fark'] = df['adet_2025'] - df['adet_2024']
+    df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 100, axis=1)
+    df['ciro_deg'] = df.apply(lambda r: ((r['ciro_2025']/r['ciro_2024'])-1)*100 if r['ciro_2024']>0 else 100, axis=1)
+    
+    # En çok artana göre sırala
+    df = df.nlargest(limit, 'adet_fark')
+    
+    return df
+
+
 # ============================================================================
 # OTOMATİK YORUM
 # ============================================================================
@@ -875,13 +916,14 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
     
     if df.empty:
         st.info("Gösterilecek veri yok")
-        return None, None
+        return None, None, None
     
     df_sorted = df.nlargest(limit, 'adet_deg') if ters else df.nsmallest(limit, 'adet_deg')
     
     prefix = "iyi" if ters else "kotu"
     selected_urun = None
-    selected_magaza = None
+    selected_mag_dusus = None
+    selected_mag_artis = None
     
     for i, (idx, row) in enumerate(df_sorted.iterrows()):
         mal = row['mal_grubu']
@@ -900,16 +942,28 @@ def karar_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = Fa
             st.markdown(f'<div class="neden-box"><strong>Neden:</strong> {neden}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="aksiyon-box">💡 <strong>Aksiyon:</strong> {aksiyon}</div>', unsafe_allow_html=True)
             
-            # Butonlar yan yana
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if st.button("📋 Ürünleri Göster", key=f"btn_urun_{prefix}_{i}"):
-                    selected_urun = mal
-            with btn_col2:
-                if st.button("🏪 Düşen Mağazalar", key=f"btn_mag_{prefix}_{i}"):
-                    selected_magaza = mal
+            # Butonlar - En İyi için 3 buton, En Kötü için 2 buton
+            if ters:  # En İyi 10
+                btn_col1, btn_col2, btn_col3 = st.columns(3)
+                with btn_col1:
+                    if st.button("📋 Ürünler", key=f"btn_urun_{prefix}_{i}"):
+                        selected_urun = mal
+                with btn_col2:
+                    if st.button("🟢 Yükselen", key=f"btn_artis_{prefix}_{i}"):
+                        selected_mag_artis = mal
+                with btn_col3:
+                    if st.button("🔴 Düşen", key=f"btn_dusus_{prefix}_{i}"):
+                        selected_mag_dusus = mal
+            else:  # En Kötü 10
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("📋 Ürünleri Göster", key=f"btn_urun_{prefix}_{i}"):
+                        selected_urun = mal
+                with btn_col2:
+                    if st.button("🏪 Düşen Mağazalar", key=f"btn_dusus_{prefix}_{i}"):
+                        selected_mag_dusus = mal
     
-    return selected_urun, selected_magaza
+    return selected_urun, selected_mag_dusus, selected_mag_artis
 
 
 # ============================================================================
@@ -980,10 +1034,10 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            selected_urun1, selected_mag1 = karar_goster(df_analiz, "🔴 EN KÖTÜ 10", limit=10, ters=False)
+            selected_urun1, selected_mag_dusus1, _ = karar_goster(df_analiz, "🔴 EN KÖTÜ 10", limit=10, ters=False)
         
         with col2:
-            selected_urun2, selected_mag2 = karar_goster(df_analiz, "🟢 EN İYİ 10", limit=10, ters=True)
+            selected_urun2, selected_mag_dusus2, selected_mag_artis2 = karar_goster(df_analiz, "🟢 EN İYİ 10", limit=10, ters=True)
         
         # Ürün detay
         selected_urun = selected_urun1 or selected_urun2
@@ -994,12 +1048,12 @@ def main():
             if not df_urun.empty:
                 st.dataframe(df_urun, use_container_width=True, hide_index=True)
         
-        # Mağaza detay
-        selected_mag = selected_mag1 or selected_mag2
-        if selected_mag:
+        # Düşen mağazalar
+        selected_mag_dusus = selected_mag_dusus1 or selected_mag_dusus2
+        if selected_mag_dusus:
             st.markdown("---")
-            st.markdown(f"### 🏪 {selected_mag} - En Çok Düşen 5 Mağaza")
-            df_mag = get_magaza_dusus(con, selected_mag, where, limit=5)
+            st.markdown(f"### 🔴 {selected_mag_dusus} - En Çok Düşen 5 Mağaza")
+            df_mag = get_magaza_dusus(con, selected_mag_dusus, where, limit=5)
             if not df_mag.empty:
                 for i, (idx, row) in enumerate(df_mag.iterrows()):
                     mag_ad = row['magaza_ad']
@@ -1016,6 +1070,29 @@ def main():
                             st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
                             st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
                         st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
+            else:
+                st.info("Bu mal grubu için mağaza verisi bulunamadı")
+        
+        # Yükselen mağazalar
+        if selected_mag_artis2:
+            st.markdown("---")
+            st.markdown(f"### 🟢 {selected_mag_artis2} - En Çok Yükselen 5 Mağaza")
+            df_mag_artis = get_magaza_artis(con, selected_mag_artis2, where, limit=5)
+            if not df_mag_artis.empty:
+                for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
+                    mag_ad = row['magaza_ad']
+                    adet_fark = row['adet_fark']
+                    adet_deg = row['adet_deg']
+                    
+                    with st.expander(f"🟢 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
+                        st.caption(f"BS: {row['bs']}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                        with col2:
+                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
             else:
                 st.info("Bu mal grubu için mağaza verisi bulunamadı")
     

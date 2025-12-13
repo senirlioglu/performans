@@ -341,8 +341,89 @@ def excel_rapor(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:
 # MARJ ANALİZİ FONKSİYONLARI (YENİ)
 # ============================================================================
 
+def marj_neden_tespit(row: pd.Series) -> list:
+    """
+    Marj kaybının nedenlerini tespit et
+    Mantık:
+    1. Satış miktarı düştü mü? → Düştüyse kampanya/indirim kontrolü
+    2. Envanter arttı mı?
+    3. Fire arttı mı?
+    En yüksek 2 nedeni döndür
+    """
+    
+    nedenler = []
+    
+    # Değerleri al
+    adet_2024 = row.get('adet_2024', 0) or 0
+    adet_2025 = row.get('adet_2025', 0) or 0
+    adet_fark = adet_2025 - adet_2024
+    adet_deg = ((adet_2025/adet_2024)-1)*100 if adet_2024 > 0 else 0
+    
+    envanter_2024 = row.get('envanter_2024', 0) or 0
+    envanter_2025 = row.get('envanter_2025', 0) or 0
+    envanter_fark = envanter_2025 - envanter_2024
+    
+    fire_2024 = abs(row.get('fire_2024', 0) or 0)
+    fire_2025 = abs(row.get('fire_2025', 0) or 0)
+    fire_fark = fire_2025 - fire_2024
+    
+    kampanya_2024 = abs(row.get('kampanya_2024', 0) or 0)
+    kampanya_2025 = abs(row.get('kampanya_2025', 0) or 0)
+    kampanya_fark = kampanya_2025 - kampanya_2024
+    
+    # 1. Satış düşüşü kontrolü
+    if adet_fark < 0:
+        # Satış düştü - kampanya/indirim kontrolü
+        if kampanya_fark > 0:
+            nedenler.append({
+                'neden': '📉 Satış Düşüşü + Kampanya Artışı',
+                'aciklama': f"Satış: {adet_2024:,.0f} → {adet_2025:,.0f} ({adet_deg:+.1f}%)\nKampanya Zararı: ₺{kampanya_2024:,.0f} → ₺{kampanya_2025:,.0f} (+₺{kampanya_fark:,.0f})",
+                'oncelik': abs(adet_fark) + kampanya_fark
+            })
+        else:
+            nedenler.append({
+                'neden': '📉 Satış Düşüşü',
+                'aciklama': f"Satış: {adet_2024:,.0f} → {adet_2025:,.0f} ({adet_deg:+.1f}%)",
+                'oncelik': abs(adet_fark)
+            })
+    
+    # 2. Envanter artışı kontrolü
+    if envanter_fark > 0:
+        envanter_deg = ((envanter_2025/envanter_2024)-1)*100 if envanter_2024 > 0 else 100
+        nedenler.append({
+            'neden': '📦 Envanter Artışı',
+            'aciklama': f"Envanter: ₺{envanter_2024:,.0f} → ₺{envanter_2025:,.0f} (+₺{envanter_fark:,.0f}, {envanter_deg:+.1f}%)",
+            'oncelik': envanter_fark
+        })
+    
+    # 3. Fire artışı kontrolü
+    if fire_fark > 0:
+        fire_deg = ((fire_2025/fire_2024)-1)*100 if fire_2024 > 0 else 100
+        nedenler.append({
+            'neden': '🔥 Fire Artışı',
+            'aciklama': f"Fire: ₺{fire_2024:,.0f} → ₺{fire_2025:,.0f} (+₺{fire_fark:,.0f}, {fire_deg:+.1f}%)",
+            'oncelik': fire_fark
+        })
+    
+    # 4. Kampanya zararı (satış düşmese bile)
+    if kampanya_fark > 0 and adet_fark >= 0:
+        nedenler.append({
+            'neden': '🏷️ Kampanya Zararı Artışı',
+            'aciklama': f"Kampanya: ₺{kampanya_2024:,.0f} → ₺{kampanya_2025:,.0f} (+₺{kampanya_fark:,.0f})",
+            'oncelik': kampanya_fark
+        })
+    
+    # Önceliğe göre sırala ve en yüksek 2'yi döndür
+    nedenler.sort(key=lambda x: x['oncelik'], reverse=True)
+    
+    if not nedenler:
+        return [{'neden': '📊 Belirgin neden yok', 'aciklama': 'Detaylı analiz gerekli'}]
+    
+    return nedenler[:2]
+
+
 def get_marj_mal_grubu(con, where: str, min_ciro: float) -> pd.DataFrame:
-    """Mal Grubu bazında marj analizi"""
+    """Mal Grubu bazında marj analizi - genişletilmiş"""
     
     ciro_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) >= {min_ciro}" if min_ciro > 0 else ""
     
@@ -358,7 +439,15 @@ def get_marj_mal_grubu(con, where: str, min_ciro: float) -> pd.DataFrame:
             SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
             SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
             SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
-            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN ABS(Fire) ELSE 0 END) as Fire_2024,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Fire) ELSE 0 END) as Fire_2025,
+            SUM(CASE WHEN Yil=2024 THEN ABS(Envanter) ELSE 0 END) as Envanter_2024,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Envanter) ELSE 0 END) as Envanter_2025,
+            SUM(CASE WHEN Yil=2024 THEN ABS(Kampanya_Zarar) ELSE 0 END) as Kampanya_2024,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Kampanya_Zarar) ELSE 0 END) as Kampanya_2025
         FROM veri
         {where_mal}
         GROUP BY Mal_Grubu
@@ -387,7 +476,7 @@ def get_marj_mal_grubu(con, where: str, min_ciro: float) -> pd.DataFrame:
 
 
 def get_marj_malzeme(con, where: str, min_ciro: float) -> pd.DataFrame:
-    """Malzeme bazında marj analizi"""
+    """Malzeme bazında marj analizi - genişletilmiş"""
     
     ciro_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) >= {min_ciro/10}" if min_ciro > 0 else ""
     
@@ -406,7 +495,13 @@ def get_marj_malzeme(con, where: str, min_ciro: float) -> pd.DataFrame:
             SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
             SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
             SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
-            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN ABS(Fire) ELSE 0 END) as Fire_2024,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Fire) ELSE 0 END) as Fire_2025,
+            SUM(CASE WHEN Yil=2024 THEN ABS(Envanter) ELSE 0 END) as Envanter_2024,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Envanter) ELSE 0 END) as Envanter_2025,
+            SUM(CASE WHEN Yil=2024 THEN ABS(Kampanya_Zarar) ELSE 0 END) as Kampanya_2024,
+            SUM(CASE WHEN Yil=2025 THEN ABS(Kampanya_Zarar) ELSE 0 END) as Kampanya_2025
         FROM veri
         {where_mal}
         GROUP BY Urun_Kod
@@ -503,7 +598,7 @@ def marj_kpi_goster(con, where: str):
 
 
 def marj_liste_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = False, prefix: str = ""):
-    """Mal grubu marj listesi"""
+    """Mal grubu marj listesi - neden tespiti ile"""
     
     st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
     
@@ -521,6 +616,7 @@ def marj_liste_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool
         renk = "🟢" if marj_fark > 0 else "🔴"
         
         with st.expander(f"{renk} **{mal}** → ₺{marj_fark:+,.0f}"):
+            # Marj bilgileri
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Marj 2024", f"₺{row['marj_2024']:,.0f}")
@@ -528,10 +624,25 @@ def marj_liste_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool
             with col2:
                 st.metric("Marj 2025", f"₺{row['marj_2025']:,.0f}", f"{marj_deg:+.1f}%")
                 st.metric("Marj Oranı 2025", f"%{row['marj_oran_2025']:.1f}", f"{row['marj_oran_fark']:+.2f}%")
+            
+            # NEDEN TESPİTİ - sadece kayıp varsa göster
+            if marj_fark < 0:
+                st.markdown("---")
+                st.markdown("**🔍 KAYIP NEDENLERİ:**")
+                
+                nedenler = marj_neden_tespit(row)
+                
+                for neden in nedenler:
+                    st.markdown(f"""
+                    <div class="neden-box">
+                        <strong>{neden['neden']}</strong><br>
+                        {neden['aciklama'].replace(chr(10), '<br>')}
+                    </div>
+                    """, unsafe_allow_html=True)
 
 
 def marj_malzeme_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = False, prefix: str = ""):
-    """Malzeme marj listesi"""
+    """Malzeme marj listesi - neden tespiti ile"""
     
     st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
     
@@ -550,6 +661,8 @@ def marj_malzeme_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bo
         
         with st.expander(f"{renk} **{urun}** → ₺{marj_fark:+,.0f}"):
             st.caption(f"Kod: {row['urun_kod']} | Mal Grubu: {row['mal_grubu']}")
+            
+            # Marj bilgileri
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("Marj 2024", f"₺{row['marj_2024']:,.0f}")
@@ -557,6 +670,21 @@ def marj_malzeme_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bo
             with col2:
                 st.metric("Marj 2025", f"₺{row['marj_2025']:,.0f}", f"{marj_deg:+.1f}%")
                 st.metric("Adet 2025", f"{row['adet_2025']:,.0f}")
+            
+            # NEDEN TESPİTİ - sadece kayıp varsa göster
+            if marj_fark < 0:
+                st.markdown("---")
+                st.markdown("**🔍 KAYIP NEDENLERİ:**")
+                
+                nedenler = marj_neden_tespit(row)
+                
+                for neden in nedenler:
+                    st.markdown(f"""
+                    <div class="neden-box">
+                        <strong>{neden['neden']}</strong><br>
+                        {neden['aciklama'].replace(chr(10), '<br>')}
+                    </div>
+                    """, unsafe_allow_html=True)
 
 
 def excel_rapor_marj(con, where: str, min_ciro: float, filtre_text: str) -> BytesIO:

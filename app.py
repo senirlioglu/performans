@@ -703,6 +703,155 @@ def excel_rapor_urun(con, where: str, min_ciro: float, filtre_text: str) -> Byte
     return output
 
 
+# ============================================================================
+# EN ÇOK / EN AZ SATAN FONKSİYONLARI
+# ============================================================================
+
+def get_urun_adet_sirali(con, where: str, min_adet: int = 0) -> pd.DataFrame:
+    """Ürünleri 2025 adet bazında sırala"""
+    
+    adet_filtre = f"HAVING SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) >= {min_adet}" if min_adet > 0 else ""
+    
+    if where:
+        where_u = f"{where} AND Urun_Kod != ''"
+    else:
+        where_u = "WHERE Urun_Kod != ''"
+    
+    sql = f"""
+        SELECT 
+            Urun_Kod,
+            MAX(Urun_Ad) as Urun_Ad,
+            MAX(Mal_Grubu) as Mal_Grubu,
+            MAX(Urun_Grubu) as Urun_Grubu,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025
+        FROM veri
+        {where_u}
+        GROUP BY Urun_Kod
+        {adet_filtre}
+    """
+    
+    df = con.execute(sql).fetchdf()
+    
+    if df.empty:
+        return df
+    
+    df.columns = [c.lower() for c in df.columns]
+    
+    df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
+    df['ciro_deg'] = df.apply(lambda r: ((r['ciro_2025']/r['ciro_2024'])-1)*100 if r['ciro_2024']>0 else 0, axis=1)
+    
+    return df
+
+
+def get_magaza_adet_sirali(con, urun_kod: str, where: str) -> pd.DataFrame:
+    """Ürün için mağazaları adet bazında sırala"""
+    
+    u_kosul = f"Urun_Kod = '{urun_kod}'"
+    full_where = f"{where} AND {u_kosul}" if where else f"WHERE {u_kosul}"
+    
+    sql = f"""
+        SELECT 
+            Magaza_Kod,
+            MAX(Magaza_Ad) as Magaza_Ad,
+            MAX(BS) as BS,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025
+        FROM veri
+        {full_where}
+        GROUP BY Magaza_Kod
+    """
+    
+    df = con.execute(sql).fetchdf()
+    df.columns = [c.lower() for c in df.columns]
+    
+    if df.empty:
+        return df
+    
+    df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
+    
+    return df
+
+
+def karar_goster_adet(df: pd.DataFrame, baslik: str, limit: int = 20, en_cok: bool = True):
+    """Adet bazlı ürün kartları"""
+    
+    st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
+    
+    if df.empty:
+        st.info("Gösterilecek veri yok")
+        return None, None
+    
+    df_sorted = df.nlargest(limit, 'adet_2025') if en_cok else df.nsmallest(limit, 'adet_2025')
+    # En az satan için 0'dan büyük olanları filtrele
+    if not en_cok:
+        df_sorted = df[df['adet_2025'] > 0].nsmallest(limit, 'adet_2025')
+    
+    prefix = "adet_cok" if en_cok else "adet_az"
+    selected_mag_cok = None
+    selected_mag_az = None
+    
+    for i, (idx, row) in enumerate(df_sorted.iterrows()):
+        urun_ad = row['urun_ad'][:35] + "..." if len(str(row['urun_ad'])) > 35 else row['urun_ad']
+        urun_kod = row['urun_kod']
+        adet_2025 = row['adet_2025']
+        adet_deg = row.get('adet_deg', 0)
+        
+        # Renk belirle
+        deg_renk = "🟢" if adet_deg > 0 else "🔴" if adet_deg < 0 else "⚪"
+        
+        with st.expander(f"**{urun_ad}** → {adet_2025:,.0f} adet ({deg_renk} {adet_deg:+.1f}%)"):
+            st.caption(f"Kod: {urun_kod} | Mal Grubu: {row['mal_grubu']}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+            with col2:
+                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row.get('ciro_deg',0):+.1f}%")
+            
+            # 2 buton
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("🏆 En Çok Satan 10 Mağaza", key=f"btn_cok_{prefix}_{i}"):
+                    selected_mag_cok = urun_kod
+            with btn_col2:
+                if st.button("📉 En Az Satan 10 Mağaza", key=f"btn_az_{prefix}_{i}"):
+                    selected_mag_az = urun_kod
+    
+    return selected_mag_cok, selected_mag_az
+
+
+def excel_rapor_adet(con, where: str, filtre_text: str) -> BytesIO:
+    """En Çok/Az Satan Excel raporu"""
+    
+    output = BytesIO()
+    
+    df = get_urun_adet_sirali(con, where, 0)
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        pd.DataFrame([{
+            'Filtre': filtre_text,
+            'Tarih': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'),
+            'Rapor': 'En Çok / En Az Satan Ürünler'
+        }]).to_excel(writer, sheet_name='Bilgi', index=False)
+        
+        if not df.empty:
+            df.nlargest(50, 'adet_2025').to_excel(writer, sheet_name='En Çok Satan 50', index=False)
+            df[df['adet_2025'] > 0].nsmallest(50, 'adet_2025').to_excel(writer, sheet_name='En Az Satan 50', index=False)
+            df.to_excel(writer, sheet_name='Tüm Veriler', index=False)
+    
+    output.seek(0)
+    return output
+
+
 def get_magaza_dusus(con, mal_grubu: str, where: str, limit: int = 5) -> pd.DataFrame:
     """Mal grubu için en çok düşen mağazalar"""
     
@@ -1430,7 +1579,7 @@ def main():
     st.markdown(f'<div class="filter-badge">📍 {filtre} | Min: ₺{secili["min_ciro"]:,}</div>', unsafe_allow_html=True)
     
     # SEKMELER
-    tab1, tab2, tab3, tab4 = st.tabs(["📦 Satış Analizi", "📂 Ürün Grubu Analizi", "🏷️ Ürün Analizi", "💰 Net Marj Analizi"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📦 Satış Analizi", "📂 Ürün Grubu Analizi", "🏷️ Ürün Analizi", "🔢 En Çok/Az Satan", "💰 Net Marj Analizi"])
     
     # =========================================================================
     # TAB 1: SATIŞ ANALİZİ (mevcut)
@@ -1687,9 +1836,97 @@ def main():
                 st.info("Bu ürün için mağaza verisi bulunamadı")
     
     # =========================================================================
-    # TAB 4: NET MARJ ANALİZİ
+    # TAB 4: EN ÇOK / EN AZ SATAN
     # =========================================================================
     with tab4:
+        # Excel rapor
+        excel_adet = excel_rapor_adet(con, where, filtre)
+        st.download_button("📥 EN ÇOK/AZ SATAN RAPORU", excel_adet, f"en_cok_az_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_adet")
+        
+        st.markdown("---")
+        
+        # KPI'lar
+        ozet_adet = get_ozet(con, where)
+        kpi_goster(ozet_adet)
+        
+        st.markdown("---")
+        
+        # Ürün Adet Analizi
+        df_adet_analiz = get_urun_adet_sirali(con, where, 0)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            adet_cok1, adet_az1 = karar_goster_adet(df_adet_analiz, "🏆 EN ÇOK SATAN 20 ÜRÜN (2025)", limit=20, en_cok=True)
+        
+        with col2:
+            adet_cok2, adet_az2 = karar_goster_adet(df_adet_analiz, "📉 EN AZ SATAN 20 ÜRÜN (2025)", limit=20, en_cok=False)
+        
+        # En çok satan mağazalar
+        adet_mag_cok = adet_cok1 or adet_cok2
+        if adet_mag_cok:
+            # Ürün adını bul
+            urun_row = df_adet_analiz[df_adet_analiz['urun_kod'] == adet_mag_cok]
+            urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_cok
+            
+            st.markdown("---")
+            st.markdown(f"### 🏆 {urun_ad}... - En Çok Satan 10 Mağaza")
+            df_mag = get_magaza_adet_sirali(con, adet_mag_cok, where)
+            if not df_mag.empty:
+                df_mag_top = df_mag.nlargest(10, 'adet_2025')
+                for i, (idx, row) in enumerate(df_mag_top.iterrows()):
+                    mag_ad = row['magaza_ad']
+                    adet_2025 = row['adet_2025']
+                    adet_deg = row['adet_deg']
+                    deg_renk = "🟢" if adet_deg > 0 else "🔴" if adet_deg < 0 else "⚪"
+                    
+                    with st.expander(f"🏆 **{row['magaza_kod']}** - {mag_ad} → {adet_2025:,.0f} adet ({deg_renk} {adet_deg:+.1f}%)"):
+                        st.caption(f"BS: {row['bs']}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                        with col2:
+                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
+            else:
+                st.info("Bu ürün için mağaza verisi bulunamadı")
+        
+        # En az satan mağazalar
+        adet_mag_az = adet_az1 or adet_az2
+        if adet_mag_az:
+            # Ürün adını bul
+            urun_row = df_adet_analiz[df_adet_analiz['urun_kod'] == adet_mag_az]
+            urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_az
+            
+            st.markdown("---")
+            st.markdown(f"### 📉 {urun_ad}... - En Az Satan 10 Mağaza")
+            df_mag = get_magaza_adet_sirali(con, adet_mag_az, where)
+            if not df_mag.empty:
+                # 0'dan büyük olanların en azını al
+                df_mag_bottom = df_mag[df_mag['adet_2025'] > 0].nsmallest(10, 'adet_2025')
+                for i, (idx, row) in enumerate(df_mag_bottom.iterrows()):
+                    mag_ad = row['magaza_ad']
+                    adet_2025 = row['adet_2025']
+                    adet_deg = row['adet_deg']
+                    deg_renk = "🟢" if adet_deg > 0 else "🔴" if adet_deg < 0 else "⚪"
+                    
+                    with st.expander(f"📉 **{row['magaza_kod']}** - {mag_ad} → {adet_2025:,.0f} adet ({deg_renk} {adet_deg:+.1f}%)"):
+                        st.caption(f"BS: {row['bs']}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                        with col2:
+                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
+            else:
+                st.info("Bu ürün için mağaza verisi bulunamadı")
+    
+    # =========================================================================
+    # TAB 5: NET MARJ ANALİZİ
+    # =========================================================================
+    with tab5:
         # Excel rapor - Marj
         excel_marj = excel_rapor_marj(con, where, secili['min_ciro'], filtre)
         st.download_button("📥 MARJ RAPORU", excel_marj, f"marj_rapor_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_marj")

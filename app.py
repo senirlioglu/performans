@@ -85,6 +85,17 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] {gap: 8px;}
     .stTabs [data-baseweb="tab"] {padding: 8px 16px; font-size: 0.9rem;}
     div[data-testid="stExpander"] {margin-bottom: 0.3rem;}
+    
+    /* Detay bölümü için highlight */
+    .detay-baslik {
+        background: linear-gradient(90deg, #3b82f6 0%, #1d4ed8 100%);
+        color: white;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        margin: 1rem 0 0.5rem 0;
+        font-weight: 600;
+        font-size: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1612,16 +1623,18 @@ def main():
         selected_urun = selected_urun1 or selected_urun2
         if selected_urun:
             st.markdown("---")
-            st.markdown(f"### 📋 {selected_urun} - Ürün Detayları")
+            st.markdown(f'<div class="detay-baslik" id="detay1">📋 {selected_urun} - Ürün Detayları</div>', unsafe_allow_html=True)
             df_urun = get_urun_detay(con, selected_urun, where)
             if not df_urun.empty:
                 st.dataframe(df_urun, use_container_width=True, hide_index=True)
+            # Scroll
+            st.components.v1.html('<script>document.getElementById("detay1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
         
         # Düşen mağazalar
         selected_mag_dusus = selected_mag_dusus1 or selected_mag_dusus2
         if selected_mag_dusus:
             st.markdown("---")
-            st.markdown(f"### 🔴 {selected_mag_dusus} - En Çok Düşen 5 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay2">🔴 {selected_mag_dusus} - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
             df_mag = get_magaza_dusus(con, selected_mag_dusus, where, limit=5)
             if not df_mag.empty:
                 for i, (idx, row) in enumerate(df_mag.iterrows()):
@@ -1641,12 +1654,14 @@ def main():
                         st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
             else:
                 st.info("Bu mal grubu için mağaza verisi bulunamadı")
+            # Scroll
+            st.components.v1.html('<script>document.getElementById("detay2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
         
         # Yükselen mağazalar - her iki listeden de
         selected_mag_artis = selected_mag_artis1 or selected_mag_artis2
         if selected_mag_artis:
             st.markdown("---")
-            st.markdown(f"### 🟢 {selected_mag_artis} - En Çok Yükselen 5 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay3">🟢 {selected_mag_artis} - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
             df_mag_artis = get_magaza_artis(con, selected_mag_artis, where, limit=5)
             if not df_mag_artis.empty:
                 for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
@@ -1665,6 +1680,8 @@ def main():
                             st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
             else:
                 st.info("Bu mal grubu için mağaza verisi bulunamadı")
+            # Scroll
+            st.components.v1.html('<script>document.getElementById("detay3")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
     
     # =========================================================================
     # TAB 2: ÜRÜN GRUBU ANALİZİ (yeni)
@@ -1697,16 +1714,17 @@ def main():
         selected_mal = ug_mal1 or ug_mal2
         if selected_mal:
             st.markdown("---")
-            st.markdown(f"### 📂 {selected_mal} - Mal Grupları")
+            st.markdown(f'<div class="detay-baslik" id="detay_ug1">📂 {selected_mal} - Mal Grupları</div>', unsafe_allow_html=True)
             df_mal = get_mal_grubu_by_urun_grubu(con, selected_mal, where)
             if not df_mal.empty:
                 st.dataframe(df_mal, use_container_width=True, hide_index=True)
+            st.components.v1.html('<script>document.getElementById("detay_ug1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
         
         # Düşen mağazalar
         ug_mag_dusus = ug_dusus1 or ug_dusus2
         if ug_mag_dusus:
             st.markdown("---")
-            st.markdown(f"### 🔴 {ug_mag_dusus} - En Çok Düşen 5 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay_ug2">🔴 {ug_mag_dusus} - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
             df_mag = get_magaza_dusus_ug(con, ug_mag_dusus, where, limit=5)
             if not df_mag.empty:
                 for i, (idx, row) in enumerate(df_mag.iterrows()):
@@ -1726,12 +1744,13 @@ def main():
                         st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
             else:
                 st.info("Bu ürün grubu için mağaza verisi bulunamadı")
+            st.components.v1.html('<script>document.getElementById("detay_ug2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
         
         # Yükselen mağazalar
         ug_mag_artis = ug_artis1 or ug_artis2
         if ug_mag_artis:
             st.markdown("---")
-            st.markdown(f"### 🟢 {ug_mag_artis} - En Çok Yükselen 5 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay_ug3">🟢 {ug_mag_artis} - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
             df_mag_artis = get_magaza_artis_ug(con, ug_mag_artis, where, limit=5)
             if not df_mag_artis.empty:
                 for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
@@ -1750,6 +1769,7 @@ def main():
                             st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
             else:
                 st.info("Bu ürün grubu için mağaza verisi bulunamadı")
+            st.components.v1.html('<script>document.getElementById("detay_ug3")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
     
     # =========================================================================
     # TAB 3: ÜRÜN ANALİZİ (yeni)
@@ -1786,7 +1806,7 @@ def main():
             urun_ad = urun_row['urun_ad'].values[0] if not urun_row.empty else urun_mag_dusus
             
             st.markdown("---")
-            st.markdown(f"### 🔴 {urun_ad[:30]}... - En Çok Düşen 5 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay_urun1">🔴 {urun_ad[:30]}... - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
             df_mag = get_magaza_dusus_urun(con, urun_mag_dusus, where, limit=5)
             if not df_mag.empty:
                 for i, (idx, row) in enumerate(df_mag.iterrows()):
@@ -1806,6 +1826,7 @@ def main():
                         st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
             else:
                 st.info("Bu ürün için mağaza verisi bulunamadı")
+            st.components.v1.html('<script>document.getElementById("detay_urun1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
         
         # Yükselen mağazalar
         urun_mag_artis = urun_artis1 or urun_artis2
@@ -1815,7 +1836,7 @@ def main():
             urun_ad = urun_row['urun_ad'].values[0] if not urun_row.empty else urun_mag_artis
             
             st.markdown("---")
-            st.markdown(f"### 🟢 {urun_ad[:30]}... - En Çok Yükselen 5 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay_urun2">🟢 {urun_ad[:30]}... - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
             df_mag_artis = get_magaza_artis_urun(con, urun_mag_artis, where, limit=5)
             if not df_mag_artis.empty:
                 for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
@@ -1834,6 +1855,7 @@ def main():
                             st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
             else:
                 st.info("Bu ürün için mağaza verisi bulunamadı")
+            st.components.v1.html('<script>document.getElementById("detay_urun2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
     
     # =========================================================================
     # TAB 4: EN ÇOK / EN AZ SATAN
@@ -1870,7 +1892,7 @@ def main():
             urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_cok
             
             st.markdown("---")
-            st.markdown(f"### 🏆 {urun_ad}... - En Çok Satan 10 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay_adet1">🏆 {urun_ad}... - En Çok Satan 10 Mağaza</div>', unsafe_allow_html=True)
             df_mag = get_magaza_adet_sirali(con, adet_mag_cok, where)
             if not df_mag.empty:
                 df_mag_top = df_mag.nlargest(10, 'adet_2025')
@@ -1891,6 +1913,7 @@ def main():
                             st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
             else:
                 st.info("Bu ürün için mağaza verisi bulunamadı")
+            st.components.v1.html('<script>document.getElementById("detay_adet1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
         
         # En az satan mağazalar
         adet_mag_az = adet_az1 or adet_az2
@@ -1900,7 +1923,7 @@ def main():
             urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_az
             
             st.markdown("---")
-            st.markdown(f"### 📉 {urun_ad}... - En Az Satan 10 Mağaza")
+            st.markdown(f'<div class="detay-baslik" id="detay_adet2">📉 {urun_ad}... - En Az Satan 10 Mağaza</div>', unsafe_allow_html=True)
             df_mag = get_magaza_adet_sirali(con, adet_mag_az, where)
             if not df_mag.empty:
                 # 0'dan büyük olanların en azını al
@@ -1922,6 +1945,7 @@ def main():
                             st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
             else:
                 st.info("Bu ürün için mağaza verisi bulunamadı")
+            st.components.v1.html('<script>document.getElementById("detay_adet2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
     
     # =========================================================================
     # TAB 5: NET MARJ ANALİZİ

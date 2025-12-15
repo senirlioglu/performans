@@ -877,6 +877,153 @@ def excel_rapor_adet(con, where: str, filtre_text: str) -> BytesIO:
     return output
 
 
+# ============================================================================
+# CİRO BAZLI ANALİZ FONKSİYONLARI
+# ============================================================================
+
+def get_urun_ciro_sirali(con, where: str) -> pd.DataFrame:
+    """Ürünleri 2025 ciro bazında sırala"""
+    
+    if where:
+        where_u = f"{where} AND Urun_Kod != ''"
+    else:
+        where_u = "WHERE Urun_Kod != ''"
+    
+    sql = f"""
+        SELECT 
+            Urun_Kod,
+            MAX(Urun_Ad) as Urun_Ad,
+            MAX(Mal_Grubu) as Mal_Grubu,
+            MAX(Urun_Grubu) as Urun_Grubu,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025
+        FROM veri
+        {where_u}
+        GROUP BY Urun_Kod
+        HAVING Ciro_2025 > 0
+    """
+    
+    df = con.execute(sql).fetchdf()
+    
+    if df.empty:
+        return df
+    
+    df.columns = [c.lower() for c in df.columns]
+    
+    df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
+    df['ciro_deg'] = df.apply(lambda r: ((r['ciro_2025']/r['ciro_2024'])-1)*100 if r['ciro_2024']>0 else 0, axis=1)
+    
+    return df
+
+
+def get_magaza_ciro_sirali(con, urun_kod: str, where: str) -> pd.DataFrame:
+    """Ürün için mağazaları ciro bazında sırala"""
+    
+    u_kosul = f"Urun_Kod = '{urun_kod}'"
+    full_where = f"{where} AND {u_kosul}" if where else f"WHERE {u_kosul}"
+    
+    sql = f"""
+        SELECT 
+            Magaza_Kod,
+            MAX(Magaza_Ad) as Magaza_Ad,
+            MAX(BS) as BS,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025
+        FROM veri
+        {full_where}
+        GROUP BY Magaza_Kod
+    """
+    
+    df = con.execute(sql).fetchdf()
+    df.columns = [c.lower() for c in df.columns]
+    
+    if df.empty:
+        return df
+    
+    df['adet_deg'] = df.apply(lambda r: ((r['adet_2025']/r['adet_2024'])-1)*100 if r['adet_2024']>0 else 0, axis=1)
+    df['ciro_deg'] = df.apply(lambda r: ((r['ciro_2025']/r['ciro_2024'])-1)*100 if r['ciro_2024']>0 else 0, axis=1)
+    
+    return df
+
+
+def karar_goster_ciro(df: pd.DataFrame, baslik: str, limit: int = 20, en_cok: bool = True):
+    """Ciro bazlı ürün kartları"""
+    
+    st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
+    
+    if df.empty:
+        st.info("Gösterilecek veri yok")
+        return None, None
+    
+    df_sorted = df.nlargest(limit, 'ciro_2025') if en_cok else df.nsmallest(limit, 'ciro_2025')
+    
+    prefix = "ciro_cok" if en_cok else "ciro_az"
+    selected_mag_cok = None
+    selected_mag_az = None
+    
+    for i, (idx, row) in enumerate(df_sorted.iterrows()):
+        urun_ad = row['urun_ad'][:35] + "..." if len(str(row['urun_ad'])) > 35 else row['urun_ad']
+        urun_kod = row['urun_kod']
+        ciro_2025 = row['ciro_2025']
+        ciro_deg = row.get('ciro_deg', 0)
+        adet_2025 = row['adet_2025']
+        adet_deg = row.get('adet_deg', 0)
+        
+        # Renk belirle
+        deg_renk = "🟢" if ciro_deg > 0 else "🔴" if ciro_deg < 0 else "⚪"
+        
+        with st.expander(f"**{urun_ad}** → ₺{ciro_2025:,.0f} ({deg_renk} {ciro_deg:+.1f}%)"):
+            st.caption(f"Kod: {urun_kod} | Mal Grubu: {row['mal_grubu']}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+            with col2:
+                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{ciro_deg:+.1f}%")
+                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+            
+            # 2 buton
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("🏆 En Çok Ciro 10 Mağaza", key=f"btn_cok_{prefix}_{i}"):
+                    selected_mag_cok = urun_kod
+            with btn_col2:
+                if st.button("📉 En Az Ciro 10 Mağaza", key=f"btn_az_{prefix}_{i}"):
+                    selected_mag_az = urun_kod
+    
+    return selected_mag_cok, selected_mag_az
+
+
+def excel_rapor_ciro(con, where: str, filtre_text: str) -> BytesIO:
+    """En Çok/Az Ciro Excel raporu"""
+    
+    output = BytesIO()
+    
+    df = get_urun_ciro_sirali(con, where)
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        pd.DataFrame([{
+            'Filtre': filtre_text,
+            'Tarih': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M'),
+            'Rapor': 'En Çok / En Az Ciro Yapan Ürünler'
+        }]).to_excel(writer, sheet_name='Bilgi', index=False)
+        
+        if not df.empty:
+            df.nlargest(50, 'ciro_2025').to_excel(writer, sheet_name='En Çok Ciro 50', index=False)
+            df.nsmallest(50, 'ciro_2025').to_excel(writer, sheet_name='En Az Ciro 50', index=False)
+            df.to_excel(writer, sheet_name='Tüm Veriler', index=False)
+    
+    output.seek(0)
+    return output
+
+
 def get_magaza_dusus(con, mal_grubu: str, where: str, limit: int = 5) -> pd.DataFrame:
     """Mal grubu için en çok düşen mağazalar"""
     
@@ -1688,7 +1835,7 @@ def main():
     st.markdown(f'<div class="filter-badge">📍 {filtre} | Min: ₺{secili["min_ciro"]:,}</div>', unsafe_allow_html=True)
     
     # SEKMELER
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📦 Satış Analizi", "📂 Ürün Grubu Analizi", "🏷️ Ürün Analizi", "🔢 En Çok/Az Satan", "💰 Net Marj Analizi"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📦 Satış Analizi", "📂 Ürün Grubu Analizi", "🏷️ Ürün Analizi", "🔢 En Çok/Az Satan", "💵 En Çok/Az Ciro", "💰 Net Marj Analizi"])
     
     # =========================================================================
     # TAB 1: SATIŞ ANALİZİ (mevcut)
@@ -1982,9 +2129,74 @@ def main():
                                 st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
     
     # =========================================================================
-    # TAB 5: NET MARJ ANALİZİ
+    # TAB 5: EN ÇOK / EN AZ CİRO
     # =========================================================================
     with tab5:
+        excel_ciro = excel_rapor_ciro(con, where, filtre)
+        st.download_button("📥 EN ÇOK/AZ CİRO RAPORU", excel_ciro, f"en_cok_az_ciro_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_ciro")
+        st.markdown("---")
+        ozet_ciro = get_ozet(con, where)
+        kpi_goster(ozet_ciro)
+        st.markdown("---")
+        
+        # DETAY PLACEHOLDER
+        detay_ciro_placeholder = st.container()
+        st.markdown("---")
+        
+        df_ciro_analiz = get_urun_ciro_sirali(con, where)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            ciro_cok1, ciro_az1 = karar_goster_ciro(df_ciro_analiz, "🏆 EN ÇOK CİRO 20 ÜRÜN (2025)", limit=20, en_cok=True)
+        with col2:
+            ciro_cok2, ciro_az2 = karar_goster_ciro(df_ciro_analiz, "📉 EN AZ CİRO 20 ÜRÜN (2025)", limit=20, en_cok=False)
+        
+        # DETAYLARI ÜSTTE GÖSTER
+        with detay_ciro_placeholder:
+            ciro_mag_cok = ciro_cok1 or ciro_cok2
+            if ciro_mag_cok:
+                urun_row = df_ciro_analiz[df_ciro_analiz['urun_kod'] == ciro_mag_cok]
+                urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else ciro_mag_cok
+                st.markdown(f'<div class="detay-baslik">🏆 {urun_ad}... - En Çok Ciro Yapan 10 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_ciro_sirali(con, ciro_mag_cok, where)
+                if not df_mag.empty:
+                    df_mag_top = df_mag.nlargest(10, 'ciro_2025')
+                    for i, (idx, row) in enumerate(df_mag_top.iterrows()):
+                        deg_renk = "🟢" if row['ciro_deg'] > 0 else "🔴" if row['ciro_deg'] < 0 else "⚪"
+                        with st.expander(f"🏆 **{row['magaza_kod']}** - {row['magaza_ad']} → ₺{row['ciro_2025']:,.0f} ({deg_renk} {row['ciro_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                            with c2:
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+            
+            ciro_mag_az = ciro_az1 or ciro_az2
+            if ciro_mag_az:
+                urun_row = df_ciro_analiz[df_ciro_analiz['urun_kod'] == ciro_mag_az]
+                urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else ciro_mag_az
+                st.markdown(f'<div class="detay-baslik">📉 {urun_ad}... - En Az Ciro Yapan 10 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_ciro_sirali(con, ciro_mag_az, where)
+                if not df_mag.empty:
+                    df_mag_bottom = df_mag[df_mag['ciro_2025'] > 0].nsmallest(10, 'ciro_2025')
+                    for i, (idx, row) in enumerate(df_mag_bottom.iterrows()):
+                        deg_renk = "🟢" if row['ciro_deg'] > 0 else "🔴" if row['ciro_deg'] < 0 else "⚪"
+                        with st.expander(f"📉 **{row['magaza_kod']}** - {row['magaza_ad']} → ₺{row['ciro_2025']:,.0f} ({deg_renk} {row['ciro_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                            with c2:
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+    
+    # =========================================================================
+    # TAB 6: NET MARJ ANALİZİ
+    # =========================================================================
+    with tab6:
         excel_marj = excel_rapor_marj(con, where, secili['min_ciro'], filtre)
         st.download_button("📥 MARJ RAPORU", excel_marj, f"marj_rapor_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_marj")
         st.markdown("---")

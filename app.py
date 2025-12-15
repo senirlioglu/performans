@@ -95,9 +95,23 @@ st.markdown("""
         margin: 1rem 0 0.5rem 0;
         font-weight: 600;
         font-size: 1rem;
+        scroll-margin-top: 80px;
     }
 </style>
 """, unsafe_allow_html=True)
+
+
+def scroll_to(element_id: str):
+    """JavaScript ile scroll"""
+    js = f"""
+    <script>
+        var element = window.parent.document.getElementById("{element_id}");
+        if (element) {{
+            element.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+        }}
+    </script>
+    """
+    st.components.v1.html(js, height=0)
 
 
 # ============================================================================
@@ -1093,6 +1107,75 @@ def marj_neden_tespit(row: pd.Series) -> list:
     return nedenler[:2]
 
 
+def get_marj_magaza_by_mal_grubu(con, mal_grubu: str, where: str, limit: int = 10) -> pd.DataFrame:
+    """Mal grubu için marj bazında en iyi mağazalar"""
+    
+    mal_kosul = f"Mal_Grubu = '{mal_grubu}'"
+    full_where = f"{where} AND {mal_kosul}" if where else f"WHERE {mal_kosul}"
+    
+    sql = f"""
+        SELECT 
+            Magaza_Kod,
+            MAX(Magaza_Ad) as Magaza_Ad,
+            MAX(BS) as BS,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025
+        FROM veri
+        {full_where}
+        GROUP BY Magaza_Kod
+        HAVING Marj_2025 > 0
+    """
+    
+    df = con.execute(sql).fetchdf()
+    df.columns = [c.lower() for c in df.columns]
+    
+    if df.empty:
+        return df
+    
+    df['marj_fark'] = df['marj_2025'] - df['marj_2024']
+    df['marj_deg'] = df.apply(lambda r: ((r['marj_2025']/r['marj_2024'])-1)*100 if r['marj_2024']>0 else 0, axis=1)
+    
+    return df.nlargest(limit, 'marj_2025')
+
+
+def get_marj_urun_by_mal_grubu(con, mal_grubu: str, where: str, limit: int = 10) -> pd.DataFrame:
+    """Mal grubu için marj bazında en iyi ürünler"""
+    
+    mal_kosul = f"Mal_Grubu = '{mal_grubu}'"
+    full_where = f"{where} AND {mal_kosul}" if where else f"WHERE {mal_kosul}"
+    
+    sql = f"""
+        SELECT 
+            Urun_Kod,
+            MAX(Urun_Ad) as Urun_Ad,
+            SUM(CASE WHEN Yil=2024 THEN Marj ELSE 0 END) as Marj_2024,
+            SUM(CASE WHEN Yil=2025 THEN Marj ELSE 0 END) as Marj_2025,
+            SUM(CASE WHEN Yil=2024 THEN Ciro ELSE 0 END) as Ciro_2024,
+            SUM(CASE WHEN Yil=2025 THEN Ciro ELSE 0 END) as Ciro_2025,
+            SUM(CASE WHEN Yil=2024 THEN Adet ELSE 0 END) as Adet_2024,
+            SUM(CASE WHEN Yil=2025 THEN Adet ELSE 0 END) as Adet_2025
+        FROM veri
+        {full_where}
+        GROUP BY Urun_Kod
+        HAVING Marj_2025 > 0
+    """
+    
+    df = con.execute(sql).fetchdf()
+    df.columns = [c.lower() for c in df.columns]
+    
+    if df.empty:
+        return df
+    
+    df['marj_fark'] = df['marj_2025'] - df['marj_2024']
+    df['marj_deg'] = df.apply(lambda r: ((r['marj_2025']/r['marj_2024'])-1)*100 if r['marj_2024']>0 else 0, axis=1)
+    
+    return df.nlargest(limit, 'marj_2025')
+
+
 def get_marj_mal_grubu(con, where: str, min_ciro: float) -> pd.DataFrame:
     """Mal Grubu bazında marj analizi - genişletilmiş"""
     
@@ -1273,9 +1356,12 @@ def marj_liste_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool
     
     st.markdown(f'<div class="section-title">{baslik}</div>', unsafe_allow_html=True)
     
+    selected_mag = None
+    selected_urun = None
+    
     if df.empty:
         st.info("Gösterilecek veri yok")
-        return
+        return None, None
     
     df_sorted = df.nlargest(limit, 'marj_fark') if ters else df.nsmallest(limit, 'marj_fark')
     
@@ -1310,6 +1396,18 @@ def marj_liste_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool
                         {neden['aciklama'].replace(chr(10), '<br>')}
                     </div>
                     """, unsafe_allow_html=True)
+            
+            # Butonlar
+            st.markdown("---")
+            btn_col1, btn_col2 = st.columns(2)
+            with btn_col1:
+                if st.button("🏆 En Çok Satan 10 Mağaza", key=f"btn_mag_{prefix}_{i}"):
+                    selected_mag = mal
+            with btn_col2:
+                if st.button("📦 En Çok Satan 10 Ürün", key=f"btn_urun_{prefix}_{i}"):
+                    selected_urun = mal
+    
+    return selected_mag, selected_urun
 
 
 def marj_malzeme_goster(df: pd.DataFrame, baslik: str, limit: int = 10, ters: bool = False, prefix: str = ""):
@@ -1608,6 +1706,11 @@ def main():
         
         st.markdown("---")
         
+        # DETAY PLACEHOLDER - Üstte gösterilecek
+        detay_placeholder = st.container()
+        
+        st.markdown("---")
+        
         # Analiz
         df_analiz = get_mal_grubu_analiz(con, where, secili['min_ciro'])
         
@@ -1619,69 +1722,62 @@ def main():
         with col2:
             selected_urun2, selected_mag_dusus2, selected_mag_artis2 = karar_goster(df_analiz, "🟢 EN İYİ 10", limit=10, ters=True)
         
-        # Ürün detay
-        selected_urun = selected_urun1 or selected_urun2
-        if selected_urun:
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay1">📋 {selected_urun} - Ürün Detayları</div>', unsafe_allow_html=True)
-            df_urun = get_urun_detay(con, selected_urun, where)
-            if not df_urun.empty:
-                st.dataframe(df_urun, use_container_width=True, hide_index=True)
-            # Scroll
-            st.components.v1.html('<script>document.getElementById("detay1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
-        
-        # Düşen mağazalar
-        selected_mag_dusus = selected_mag_dusus1 or selected_mag_dusus2
-        if selected_mag_dusus:
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay2">🔴 {selected_mag_dusus} - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
-            df_mag = get_magaza_dusus(con, selected_mag_dusus, where, limit=5)
-            if not df_mag.empty:
-                for i, (idx, row) in enumerate(df_mag.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_fark = row['adet_fark']
-                    adet_deg = row['adet_deg']
-                    
-                    with st.expander(f"🔴 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
-                        st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
-            else:
-                st.info("Bu mal grubu için mağaza verisi bulunamadı")
-            # Scroll
-            st.components.v1.html('<script>document.getElementById("detay2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
-        
-        # Yükselen mağazalar - her iki listeden de
-        selected_mag_artis = selected_mag_artis1 or selected_mag_artis2
-        if selected_mag_artis:
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay3">🟢 {selected_mag_artis} - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
-            df_mag_artis = get_magaza_artis(con, selected_mag_artis, where, limit=5)
-            if not df_mag_artis.empty:
-                for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_fark = row['adet_fark']
-                    adet_deg = row['adet_deg']
-                    
-                    with st.expander(f"🟢 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
-            else:
-                st.info("Bu mal grubu için mağaza verisi bulunamadı")
-            # Scroll
-            st.components.v1.html('<script>document.getElementById("detay3")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
+        # DETAYLARI ÜSTTE GÖSTER
+        with detay_placeholder:
+            # Ürün detay
+            selected_urun = selected_urun1 or selected_urun2
+            if selected_urun:
+                st.markdown(f'<div class="detay-baslik">📋 {selected_urun} - Ürün Detayları</div>', unsafe_allow_html=True)
+                df_urun = get_urun_detay(con, selected_urun, where)
+                if not df_urun.empty:
+                    st.dataframe(df_urun, use_container_width=True, hide_index=True)
+            
+            # Düşen mağazalar
+            selected_mag_dusus = selected_mag_dusus1 or selected_mag_dusus2
+            if selected_mag_dusus:
+                st.markdown(f'<div class="detay-baslik">🔴 {selected_mag_dusus} - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_dusus(con, selected_mag_dusus, where, limit=5)
+                if not df_mag.empty:
+                    for i, (idx, row) in enumerate(df_mag.iterrows()):
+                        mag_ad = row['magaza_ad']
+                        adet_fark = row['adet_fark']
+                        adet_deg = row['adet_deg']
+                        
+                        with st.expander(f"🔴 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
+                            st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
+                else:
+                    st.info("Bu mal grubu için mağaza verisi bulunamadı")
+            
+            # Yükselen mağazalar
+            selected_mag_artis = selected_mag_artis1 or selected_mag_artis2
+            if selected_mag_artis:
+                st.markdown(f'<div class="detay-baslik">🟢 {selected_mag_artis} - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
+                df_mag_artis = get_magaza_artis(con, selected_mag_artis, where, limit=5)
+                if not df_mag_artis.empty:
+                    for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
+                        mag_ad = row['magaza_ad']
+                        adet_fark = row['adet_fark']
+                        adet_deg = row['adet_deg']
+                        
+                        with st.expander(f"🟢 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
+                else:
+                    st.info("Bu mal grubu için mağaza verisi bulunamadı")
     
     # =========================================================================
     # TAB 2: ÜRÜN GRUBU ANALİZİ (yeni)
@@ -1699,6 +1795,11 @@ def main():
         
         st.markdown("---")
         
+        # DETAY PLACEHOLDER
+        detay_ug_placeholder = st.container()
+        
+        st.markdown("---")
+        
         # Ürün Grubu Analizi
         df_ug_analiz = get_urun_grubu_analiz(con, where, secili['min_ciro'])
         
@@ -1710,256 +1811,188 @@ def main():
         with col2:
             ug_mal2, ug_dusus2, ug_artis2 = karar_goster_ug(df_ug_analiz, "🟢 EN İYİ 10 ÜRÜN GRUBU", limit=10, ters=True)
         
-        # Mal Grubu detay
-        selected_mal = ug_mal1 or ug_mal2
-        if selected_mal:
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_ug1">📂 {selected_mal} - Mal Grupları</div>', unsafe_allow_html=True)
-            df_mal = get_mal_grubu_by_urun_grubu(con, selected_mal, where)
-            if not df_mal.empty:
-                st.dataframe(df_mal, use_container_width=True, hide_index=True)
-            st.components.v1.html('<script>document.getElementById("detay_ug1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
-        
-        # Düşen mağazalar
-        ug_mag_dusus = ug_dusus1 or ug_dusus2
-        if ug_mag_dusus:
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_ug2">🔴 {ug_mag_dusus} - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
-            df_mag = get_magaza_dusus_ug(con, ug_mag_dusus, where, limit=5)
-            if not df_mag.empty:
-                for i, (idx, row) in enumerate(df_mag.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_fark = row['adet_fark']
-                    adet_deg = row['adet_deg']
-                    
-                    with st.expander(f"🔴 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
-                        st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
-            else:
-                st.info("Bu ürün grubu için mağaza verisi bulunamadı")
-            st.components.v1.html('<script>document.getElementById("detay_ug2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
-        
-        # Yükselen mağazalar
-        ug_mag_artis = ug_artis1 or ug_artis2
-        if ug_mag_artis:
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_ug3">🟢 {ug_mag_artis} - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
-            df_mag_artis = get_magaza_artis_ug(con, ug_mag_artis, where, limit=5)
-            if not df_mag_artis.empty:
-                for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_fark = row['adet_fark']
-                    adet_deg = row['adet_deg']
-                    
-                    with st.expander(f"🟢 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
-            else:
-                st.info("Bu ürün grubu için mağaza verisi bulunamadı")
-            st.components.v1.html('<script>document.getElementById("detay_ug3")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
+        # DETAYLARI ÜSTTE GÖSTER
+        with detay_ug_placeholder:
+            selected_mal = ug_mal1 or ug_mal2
+            if selected_mal:
+                st.markdown(f'<div class="detay-baslik">📂 {selected_mal} - Mal Grupları</div>', unsafe_allow_html=True)
+                df_mal = get_mal_grubu_by_urun_grubu(con, selected_mal, where)
+                if not df_mal.empty:
+                    st.dataframe(df_mal, use_container_width=True, hide_index=True)
+            
+            ug_mag_dusus = ug_dusus1 or ug_dusus2
+            if ug_mag_dusus:
+                st.markdown(f'<div class="detay-baslik">🔴 {ug_mag_dusus} - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_dusus_ug(con, ug_mag_dusus, where, limit=5)
+                if not df_mag.empty:
+                    for i, (idx, row) in enumerate(df_mag.iterrows()):
+                        with st.expander(f"🔴 **{row['magaza_kod']}** - {row['magaza_ad']} → {row['adet_fark']:+,.0f} adet ({row['adet_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
+                            st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
+            
+            ug_mag_artis = ug_artis1 or ug_artis2
+            if ug_mag_artis:
+                st.markdown(f'<div class="detay-baslik">🟢 {ug_mag_artis} - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
+                df_mag_artis = get_magaza_artis_ug(con, ug_mag_artis, where, limit=5)
+                if not df_mag_artis.empty:
+                    for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
+                        with st.expander(f"🟢 **{row['magaza_kod']}** - {row['magaza_ad']} → {row['adet_fark']:+,.0f} adet ({row['adet_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
     
     # =========================================================================
-    # TAB 3: ÜRÜN ANALİZİ (yeni)
+    # TAB 3: ÜRÜN ANALİZİ
     # =========================================================================
     with tab3:
-        # Excel rapor
         excel_urun = excel_rapor_urun(con, where, secili['min_ciro'], filtre)
         st.download_button("📥 ÜRÜN RAPORU", excel_urun, f"urun_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_urun")
         
         st.markdown("---")
-        
-        # KPI'lar
         ozet_urun = get_ozet(con, where)
         kpi_goster(ozet_urun)
-        
         st.markdown("---")
         
-        # Ürün Analizi
+        # DETAY PLACEHOLDER
+        detay_urun_placeholder = st.container()
+        st.markdown("---")
+        
         df_urun_analiz = get_urun_analiz(con, where, secili['min_ciro'])
         
         col1, col2 = st.columns(2)
-        
         with col1:
             urun_dusus1, urun_artis1 = karar_goster_urun(df_urun_analiz, "🔴 EN KÖTÜ 20 ÜRÜN", limit=20, ters=False)
-        
         with col2:
             urun_dusus2, urun_artis2 = karar_goster_urun(df_urun_analiz, "🟢 EN İYİ 20 ÜRÜN", limit=20, ters=True)
         
-        # Düşen mağazalar
-        urun_mag_dusus = urun_dusus1 or urun_dusus2
-        if urun_mag_dusus:
-            # Ürün adını bul
-            urun_row = df_urun_analiz[df_urun_analiz['urun_kod'] == urun_mag_dusus]
-            urun_ad = urun_row['urun_ad'].values[0] if not urun_row.empty else urun_mag_dusus
+        # DETAYLARI ÜSTTE GÖSTER
+        with detay_urun_placeholder:
+            urun_mag_dusus = urun_dusus1 or urun_dusus2
+            if urun_mag_dusus:
+                urun_row = df_urun_analiz[df_urun_analiz['urun_kod'] == urun_mag_dusus]
+                urun_ad = urun_row['urun_ad'].values[0] if not urun_row.empty else urun_mag_dusus
+                st.markdown(f'<div class="detay-baslik">🔴 {urun_ad[:30]}... - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_dusus_urun(con, urun_mag_dusus, where, limit=5)
+                if not df_mag.empty:
+                    for i, (idx, row) in enumerate(df_mag.iterrows()):
+                        with st.expander(f"🔴 **{row['magaza_kod']}** - {row['magaza_ad']} → {row['adet_fark']:+,.0f} adet ({row['adet_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
+                            st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
             
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_urun1">🔴 {urun_ad[:30]}... - En Çok Düşen 5 Mağaza</div>', unsafe_allow_html=True)
-            df_mag = get_magaza_dusus_urun(con, urun_mag_dusus, where, limit=5)
-            if not df_mag.empty:
-                for i, (idx, row) in enumerate(df_mag.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_fark = row['adet_fark']
-                    adet_deg = row['adet_deg']
-                    
-                    with st.expander(f"🔴 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
-                        st.metric("Fire 2025", f"₺{row['fire_2025']:,.0f}")
-            else:
-                st.info("Bu ürün için mağaza verisi bulunamadı")
-            st.components.v1.html('<script>document.getElementById("detay_urun1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
-        
-        # Yükselen mağazalar
-        urun_mag_artis = urun_artis1 or urun_artis2
-        if urun_mag_artis:
-            # Ürün adını bul
-            urun_row = df_urun_analiz[df_urun_analiz['urun_kod'] == urun_mag_artis]
-            urun_ad = urun_row['urun_ad'].values[0] if not urun_row.empty else urun_mag_artis
-            
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_urun2">🟢 {urun_ad[:30]}... - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
-            df_mag_artis = get_magaza_artis_urun(con, urun_mag_artis, where, limit=5)
-            if not df_mag_artis.empty:
-                for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_fark = row['adet_fark']
-                    adet_deg = row['adet_deg']
-                    
-                    with st.expander(f"🟢 **{row['magaza_kod']}** - {mag_ad} → {adet_fark:+,.0f} adet ({adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
-            else:
-                st.info("Bu ürün için mağaza verisi bulunamadı")
-            st.components.v1.html('<script>document.getElementById("detay_urun2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
+            urun_mag_artis = urun_artis1 or urun_artis2
+            if urun_mag_artis:
+                urun_row = df_urun_analiz[df_urun_analiz['urun_kod'] == urun_mag_artis]
+                urun_ad = urun_row['urun_ad'].values[0] if not urun_row.empty else urun_mag_artis
+                st.markdown(f'<div class="detay-baslik">🟢 {urun_ad[:30]}... - En Çok Yükselen 5 Mağaza</div>', unsafe_allow_html=True)
+                df_mag_artis = get_magaza_artis_urun(con, urun_mag_artis, where, limit=5)
+                if not df_mag_artis.empty:
+                    for i, (idx, row) in enumerate(df_mag_artis.iterrows()):
+                        with st.expander(f"🟢 **{row['magaza_kod']}** - {row['magaza_ad']} → {row['adet_fark']:+,.0f} adet ({row['adet_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}", f"{row['ciro_deg']:+.1f}%")
     
     # =========================================================================
     # TAB 4: EN ÇOK / EN AZ SATAN
     # =========================================================================
     with tab4:
-        # Excel rapor
         excel_adet = excel_rapor_adet(con, where, filtre)
         st.download_button("📥 EN ÇOK/AZ SATAN RAPORU", excel_adet, f"en_cok_az_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_adet")
-        
         st.markdown("---")
-        
-        # KPI'lar
         ozet_adet = get_ozet(con, where)
         kpi_goster(ozet_adet)
-        
         st.markdown("---")
         
-        # Ürün Adet Analizi
+        # DETAY PLACEHOLDER
+        detay_adet_placeholder = st.container()
+        st.markdown("---")
+        
         df_adet_analiz = get_urun_adet_sirali(con, where, 0)
         
         col1, col2 = st.columns(2)
-        
         with col1:
             adet_cok1, adet_az1 = karar_goster_adet(df_adet_analiz, "🏆 EN ÇOK SATAN 20 ÜRÜN (2025)", limit=20, en_cok=True)
-        
         with col2:
             adet_cok2, adet_az2 = karar_goster_adet(df_adet_analiz, "📉 EN AZ SATAN 20 ÜRÜN (2025)", limit=20, en_cok=False)
         
-        # En çok satan mağazalar
-        adet_mag_cok = adet_cok1 or adet_cok2
-        if adet_mag_cok:
-            # Ürün adını bul
-            urun_row = df_adet_analiz[df_adet_analiz['urun_kod'] == adet_mag_cok]
-            urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_cok
+        # DETAYLARI ÜSTTE GÖSTER
+        with detay_adet_placeholder:
+            adet_mag_cok = adet_cok1 or adet_cok2
+            if adet_mag_cok:
+                urun_row = df_adet_analiz[df_adet_analiz['urun_kod'] == adet_mag_cok]
+                urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_cok
+                st.markdown(f'<div class="detay-baslik">🏆 {urun_ad}... - En Çok Satan 10 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_adet_sirali(con, adet_mag_cok, where)
+                if not df_mag.empty:
+                    df_mag_top = df_mag.nlargest(10, 'adet_2025')
+                    for i, (idx, row) in enumerate(df_mag_top.iterrows()):
+                        deg_renk = "🟢" if row['adet_deg'] > 0 else "🔴" if row['adet_deg'] < 0 else "⚪"
+                        with st.expander(f"🏆 **{row['magaza_kod']}** - {row['magaza_ad']} → {row['adet_2025']:,.0f} adet ({deg_renk} {row['adet_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
             
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_adet1">🏆 {urun_ad}... - En Çok Satan 10 Mağaza</div>', unsafe_allow_html=True)
-            df_mag = get_magaza_adet_sirali(con, adet_mag_cok, where)
-            if not df_mag.empty:
-                df_mag_top = df_mag.nlargest(10, 'adet_2025')
-                for i, (idx, row) in enumerate(df_mag_top.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_2025 = row['adet_2025']
-                    adet_deg = row['adet_deg']
-                    deg_renk = "🟢" if adet_deg > 0 else "🔴" if adet_deg < 0 else "⚪"
-                    
-                    with st.expander(f"🏆 **{row['magaza_kod']}** - {mag_ad} → {adet_2025:,.0f} adet ({deg_renk} {adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
-            else:
-                st.info("Bu ürün için mağaza verisi bulunamadı")
-            st.components.v1.html('<script>document.getElementById("detay_adet1")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
-        
-        # En az satan mağazalar
-        adet_mag_az = adet_az1 or adet_az2
-        if adet_mag_az:
-            # Ürün adını bul
-            urun_row = df_adet_analiz[df_adet_analiz['urun_kod'] == adet_mag_az]
-            urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_az
-            
-            st.markdown("---")
-            st.markdown(f'<div class="detay-baslik" id="detay_adet2">📉 {urun_ad}... - En Az Satan 10 Mağaza</div>', unsafe_allow_html=True)
-            df_mag = get_magaza_adet_sirali(con, adet_mag_az, where)
-            if not df_mag.empty:
-                # 0'dan büyük olanların en azını al
-                df_mag_bottom = df_mag[df_mag['adet_2025'] > 0].nsmallest(10, 'adet_2025')
-                for i, (idx, row) in enumerate(df_mag_bottom.iterrows()):
-                    mag_ad = row['magaza_ad']
-                    adet_2025 = row['adet_2025']
-                    adet_deg = row['adet_deg']
-                    deg_renk = "🟢" if adet_deg > 0 else "🔴" if adet_deg < 0 else "⚪"
-                    
-                    with st.expander(f"📉 **{row['magaza_kod']}** - {mag_ad} → {adet_2025:,.0f} adet ({deg_renk} {adet_deg:+.1f}%)"):
-                        st.caption(f"BS: {row['bs']}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
-                            st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
-                        with col2:
-                            st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{adet_deg:+.1f}%")
-                            st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
-            else:
-                st.info("Bu ürün için mağaza verisi bulunamadı")
-            st.components.v1.html('<script>document.getElementById("detay_adet2")?.scrollIntoView({behavior:"smooth",block:"start"});</script>', height=0)
+            adet_mag_az = adet_az1 or adet_az2
+            if adet_mag_az:
+                urun_row = df_adet_analiz[df_adet_analiz['urun_kod'] == adet_mag_az]
+                urun_ad = urun_row['urun_ad'].values[0][:30] if not urun_row.empty else adet_mag_az
+                st.markdown(f'<div class="detay-baslik">📉 {urun_ad}... - En Az Satan 10 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_magaza_adet_sirali(con, adet_mag_az, where)
+                if not df_mag.empty:
+                    df_mag_bottom = df_mag[df_mag['adet_2025'] > 0].nsmallest(10, 'adet_2025')
+                    for i, (idx, row) in enumerate(df_mag_bottom.iterrows()):
+                        deg_renk = "🟢" if row['adet_deg'] > 0 else "🔴" if row['adet_deg'] < 0 else "⚪"
+                        with st.expander(f"📉 **{row['magaza_kod']}** - {row['magaza_ad']} → {row['adet_2025']:,.0f} adet ({deg_renk} {row['adet_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}", f"{row['adet_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
     
     # =========================================================================
     # TAB 5: NET MARJ ANALİZİ
     # =========================================================================
     with tab5:
-        # Excel rapor - Marj
         excel_marj = excel_rapor_marj(con, where, secili['min_ciro'], filtre)
         st.download_button("📥 MARJ RAPORU", excel_marj, f"marj_rapor_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx", key="excel_marj")
-        
+        st.markdown("---")
+        marj_kpi_goster(con, where)
         st.markdown("---")
         
-        # Marj KPI'lar
-        marj_kpi_goster(con, where)
-        
+        # DETAY PLACEHOLDER
+        detay_marj_placeholder = st.container()
         st.markdown("---")
         
         # Mal Grubu bazında marj analizi
@@ -1968,12 +2001,10 @@ def main():
         df_marj_mal = get_marj_mal_grubu(con, where, secili['min_ciro'])
         
         col1, col2 = st.columns(2)
-        
         with col1:
-            marj_liste_goster(df_marj_mal, "🔴 EN ÇOK MARJ KAYBI (Mal Grubu)", limit=10, ters=False, prefix="mal_kotu")
-        
+            marj_mag1, marj_urun1 = marj_liste_goster(df_marj_mal, "🔴 EN ÇOK MARJ KAYBI (Mal Grubu)", limit=10, ters=False, prefix="mal_kotu")
         with col2:
-            marj_liste_goster(df_marj_mal, "🟢 EN ÇOK MARJ ARTIŞI (Mal Grubu)", limit=10, ters=True, prefix="mal_iyi")
+            marj_mag2, marj_urun2 = marj_liste_goster(df_marj_mal, "🟢 EN ÇOK MARJ ARTIŞI (Mal Grubu)", limit=10, ters=True, prefix="mal_iyi")
         
         st.markdown("---")
         
@@ -1983,12 +2014,49 @@ def main():
         df_marj_urun = get_marj_malzeme(con, where, secili['min_ciro'])
         
         col1, col2 = st.columns(2)
-        
         with col1:
             marj_malzeme_goster(df_marj_urun, "🔴 EN ÇOK MARJ KAYBI (Malzeme)", limit=10, ters=False, prefix="urun_kotu")
-        
         with col2:
             marj_malzeme_goster(df_marj_urun, "🟢 EN ÇOK MARJ ARTIŞI (Malzeme)", limit=10, ters=True, prefix="urun_iyi")
+        
+        # DETAYLARI ÜSTTE GÖSTER
+        with detay_marj_placeholder:
+            # En çok satan mağazalar
+            selected_marj_mag = marj_mag1 or marj_mag2
+            if selected_marj_mag:
+                st.markdown(f'<div class="detay-baslik">🏆 {selected_marj_mag} - En Çok Marj Yapan 10 Mağaza</div>', unsafe_allow_html=True)
+                df_mag = get_marj_magaza_by_mal_grubu(con, selected_marj_mag, where, limit=10)
+                if not df_mag.empty:
+                    for i, (idx, row) in enumerate(df_mag.iterrows()):
+                        deg_renk = "🟢" if row['marj_deg'] > 0 else "🔴" if row['marj_deg'] < 0 else "⚪"
+                        with st.expander(f"🏆 **{row['magaza_kod']}** - {row['magaza_ad']} → ₺{row['marj_2025']:,.0f} ({deg_renk} {row['marj_deg']:+.1f}%)"):
+                            st.caption(f"BS: {row['bs']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Marj 2024", f"₺{row['marj_2024']:,.0f}")
+                                st.metric("Ciro 2024", f"₺{row['ciro_2024']:,.0f}")
+                            with c2:
+                                st.metric("Marj 2025", f"₺{row['marj_2025']:,.0f}", f"{row['marj_deg']:+.1f}%")
+                                st.metric("Ciro 2025", f"₺{row['ciro_2025']:,.0f}")
+            
+            # En çok satan ürünler
+            selected_marj_urun = marj_urun1 or marj_urun2
+            if selected_marj_urun:
+                st.markdown(f'<div class="detay-baslik">📦 {selected_marj_urun} - En Çok Marj Yapan 10 Ürün</div>', unsafe_allow_html=True)
+                df_urun = get_marj_urun_by_mal_grubu(con, selected_marj_urun, where, limit=10)
+                if not df_urun.empty:
+                    for i, (idx, row) in enumerate(df_urun.iterrows()):
+                        urun_ad = row['urun_ad'][:35] + "..." if len(str(row['urun_ad'])) > 35 else row['urun_ad']
+                        deg_renk = "🟢" if row['marj_deg'] > 0 else "🔴" if row['marj_deg'] < 0 else "⚪"
+                        with st.expander(f"📦 **{urun_ad}** → ₺{row['marj_2025']:,.0f} ({deg_renk} {row['marj_deg']:+.1f}%)"):
+                            st.caption(f"Kod: {row['urun_kod']}")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.metric("Marj 2024", f"₺{row['marj_2024']:,.0f}")
+                                st.metric("Adet 2024", f"{row['adet_2024']:,.0f}")
+                            with c2:
+                                st.metric("Marj 2025", f"₺{row['marj_2025']:,.0f}", f"{row['marj_deg']:+.1f}%")
+                                st.metric("Adet 2025", f"{row['adet_2025']:,.0f}")
     
     # Footer
     st.markdown("---")
